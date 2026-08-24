@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Asignador de turnos</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0d11; }
+  body { display: flex; justify-content: center; padding: 24px 12px; }
+  #root { width: 100%; max-width: 900px; }
+  * { box-sizing: border-box; }
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useMemo } = React;
+
+const DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+const tokens = {
+  bg: "#12151b",
+  surface: "#181d25",
+  surfaceAlt: "#1f2631",
+  border: "#2a3140",
+  text: "#eef1f5",
+  muted: "#8a93a3",
+  accent: "#e2a63f",
+  accent2: "#49b3a6",
+  warn: "#d9614f",
+};
+
+// --- Iconos SVG en línea (reemplazan a lucide-react para no depender de un bundler) ---
+const Icon = ({ children, size = 14, color = "currentColor" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>
+);
+const Plus = (p) => <Icon {...p}><path d="M12 5v14M5 12h14"/></Icon>;
+const Trash2 = (p) => <Icon {...p}><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></Icon>;
+const Users = (p) => <Icon {...p}><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2M17 11a4 4 0 0 0 0-8M23 21v-2a4 4 0 0 0-3-3.87"/></Icon>;
+const CalendarClock = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><circle cx="16" cy="16" r="3"/><path d="M16 14.8V16l1 .8"/></Icon>;
+const Shuffle = (p) => <Icon {...p}><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></Icon>;
+const Link2 = (p) => <Icon {...p}><path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 1 1 0 10h-2M8 12h8"/></Icon>;
+const AlertTriangle = (p) => <Icon {...p}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></Icon>;
+const ChevronRight = (p) => <Icon {...p}><path d="m9 18 6-6-6-6"/></Icon>;
+const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></Icon>;
+
+function timeKey(slot) { return `${slot.dia}|${slot.inicio}|${slot.fin}`; }
+
+function assignTurnos(participantes, turnos) {
+  const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.id]);
+  const orden = [...turnos].sort((a, b) => disponibles(a).length - disponibles(b).length);
+
+  const asignadosCount = {};
+  participantes.forEach((p) => (asignadosCount[p.id] = 0));
+  const timeUsado = {};
+  participantes.forEach((p) => (timeUsado[p.id] = new Set()));
+
+  const resultados = {};
+
+  for (const t of orden) {
+    const tk = timeKey(t);
+    let pool = disponibles(t).filter((p) => !timeUsado[p.id].has(tk));
+
+    if (pool.length < 2) {
+      resultados[t.id] = {
+        pair: null,
+        reason: pool.length === 0 ? "Nadie disponible para este turno." : "Solo hay una persona disponible; falta pareja.",
+      };
+      continue;
+    }
+
+    const poolIds = new Set(pool.map((p) => p.id));
+    pool = pool.filter((p) => {
+      if (p.prefTipo === "dura" && p.prefPartnerId) return poolIds.has(p.prefPartnerId);
+      return true;
+    });
+
+    if (pool.length < 2) {
+      const bloqueado = disponibles(t).find(
+        (p) => p.prefTipo === "dura" && p.prefPartnerId && !poolIds.has(p.prefPartnerId)
+      );
+      resultados[t.id] = {
+        pair: null,
+        reason: bloqueado
+          ? `${bloqueado.nombre} exige trabajar con su pareja fija, pero no coincide en este turno.`
+          : "No hay suficientes personas compatibles.",
+      };
+      continue;
+    }
+
+    let mejor = null;
+    let mejorScore = -Infinity;
+    for (let i = 0; i < pool.length; i++) {
+      for (let j = i + 1; j < pool.length; j++) {
+        const a = pool[i], b = pool[j];
+        if (a.prefTipo === "dura" && a.prefPartnerId && a.prefPartnerId !== b.id) continue;
+        if (b.prefTipo === "dura" && b.prefPartnerId && b.prefPartnerId !== a.id) continue;
+
+        let score = 0;
+        const aQuiereB = a.prefPartnerId === b.id;
+        const bQuiereA = b.prefPartnerId === a.id;
+        if (aQuiereB && bQuiereA) score += 5;
+        else if (aQuiereB || bQuiereA) score += 3;
+
+        const carga = asignadosCount[a.id] + asignadosCount[b.id];
+        score -= carga * 0.5;
+
+        if (score > mejorScore) { mejorScore = score; mejor = [a, b]; }
+      }
+    }
+
+    if (!mejor) {
+      resultados[t.id] = { pair: null, reason: "No se encontró una pareja compatible." };
+      continue;
+    }
+
+    resultados[t.id] = { pair: [mejor[0].id, mejor[1].id], reason: null };
+    asignadosCount[mejor[0].id]++;
+    asignadosCount[mejor[1].id]++;
+    timeUsado[mejor[0].id].add(tk);
+    timeUsado[mejor[1].id].add(tk);
+  }
+
+  return { resultados, asignadosCount };
+}
+
+function AsignadorTurnos() {
+  const [tab, setTab] = useState("turnos");
+  const [turnos, setTurnos] = useState([
+    { id: uid(), dia: "Lun", sitio: "Sitio A", inicio: "08:00", fin: "16:00" },
+    { id: uid(), dia: "Mar", sitio: "Sitio A", inicio: "08:00", fin: "16:00" },
+  ]);
+  const [participantes, setParticipantes] = useState([]);
+  const [nombreNuevo, setNombreNuevo] = useState("");
+  const [asignacion, setAsignacion] = useState(null);
+
+  const addTurno = () => setTurnos((t) => [...t, { id: uid(), dia: "Lun", sitio: "", inicio: "08:00", fin: "16:00" }]);
+  const duplicarTurno = (id) => setTurnos((t) => {
+    const orig = t.find((x) => x.id === id);
+    if (!orig) return t;
+    return [...t, { ...orig, id: uid() }];
+  });
+  const updateTurno = (id, field, value) => setTurnos((t) => t.map((x) => (x.id === id ? { ...x, [field]: value } : x)));
+  const removeTurno = (id) => {
+    setTurnos((t) => t.filter((x) => x.id !== id));
+    setParticipantes((ps) => ps.map((p) => {
+      const disp = { ...p.disponibilidad };
+      delete disp[id];
+      return { ...p, disponibilidad: disp };
+    }));
+    setAsignacion(null);
+  };
+
+  const addParticipante = () => {
+    const nombre = nombreNuevo.trim();
+    if (!nombre) return;
+    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda" }]);
+    setNombreNuevo("");
+    setAsignacion(null);
+  };
+  const removeParticipante = (id) => {
+    setParticipantes((ps) => ps.filter((p) => p.id !== id).map((p) => (p.prefPartnerId === id ? { ...p, prefPartnerId: null } : p)));
+    setAsignacion(null);
+  };
+  const toggleDisponibilidad = (participanteId, turnoId) => {
+    setParticipantes((ps) => ps.map((p) => (p.id === participanteId
+      ? { ...p, disponibilidad: { ...p.disponibilidad, [turnoId]: !p.disponibilidad[turnoId] } }
+      : p)));
+    setAsignacion(null);
+  };
+  const updateParticipante = (id, field, value) => {
+    setParticipantes((ps) => ps.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+    setAsignacion(null);
+  };
+
+  const generar = () => {
+    const { resultados, asignadosCount } = assignTurnos(participantes, turnos);
+    setAsignacion({ resultados, asignadosCount });
+  };
+
+  const porDia = useMemo(() => {
+    const map = {};
+    DIAS.forEach((d) => (map[d] = []));
+    turnos.forEach((t) => { if (!map[t.dia]) map[t.dia] = []; map[t.dia].push(t); });
+    return map;
+  }, [turnos]);
+
+  const nombreDe = (id) => participantes.find((p) => p.id === id)?.nombre || "?";
+  const cubiertos = asignacion ? Object.values(asignacion.resultados).filter((r) => r.pair).length : 0;
+
+  return (
+    <div style={{
+      background: tokens.bg, color: tokens.text,
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+      minHeight: "100%", borderRadius: "12px", overflow: "hidden", border: `1px solid ${tokens.border}`,
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+        .at-mono { font-family: 'IBM Plex Mono', monospace; }
+        .at-display { font-family: 'Space Grotesk', sans-serif; }
+        .at-tab { transition: all 0.15s ease; }
+        .at-tab:hover { color: ${tokens.text} !important; }
+        .at-chip { transition: all 0.12s ease; cursor: pointer; user-select: none; }
+        .at-chip:hover { border-color: ${tokens.accent} !important; }
+        .at-btn { transition: all 0.15s ease; cursor: pointer; }
+        .at-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .at-row:hover { background: ${tokens.surfaceAlt} !important; }
+        .at-input, .at-select {
+          background: ${tokens.surfaceAlt}; border: 1px solid ${tokens.border}; color: ${tokens.text};
+          border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit;
+        }
+        .at-input:focus, .at-select:focus { outline: 1px solid ${tokens.accent}; }
+        ::placeholder { color: ${tokens.muted}; }
+      `}</style>
+
+      <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${tokens.border}`, background: tokens.surface }}>
+        <div className="at-display" style={{ fontSize: "20px", fontWeight: 700, letterSpacing: "-0.01em" }}>Asignador de turnos</div>
+        <div style={{ fontSize: "12.5px", color: tokens.muted, marginTop: "2px" }}>Turnos en pareja · disponibilidad y preferencias</div>
+      </div>
+
+      <div style={{ display: "flex", gap: "2px", padding: "10px 24px 0", background: tokens.surface, borderBottom: `1px solid ${tokens.border}` }}>
+        {[
+          { id: "turnos", label: "Turnos", icon: CalendarClock },
+          { id: "participantes", label: "Participantes", icon: Users },
+          { id: "asignacion", label: "Asignación", icon: Shuffle },
+        ].map((t) => {
+          const IconC = t.icon;
+          const active = tab === t.id;
+          return (
+            <button key={t.id} className="at-tab" onClick={() => setTab(t.id)} style={{
+              display: "flex", alignItems: "center", gap: "6px", padding: "10px 16px", background: "transparent",
+              border: "none", borderBottom: active ? `2px solid ${tokens.accent}` : "2px solid transparent",
+              color: active ? tokens.accent : tokens.muted, fontSize: "13px", fontWeight: 600, cursor: "pointer",
+            }}>
+              <IconC size={14} />{t.label}
+              {t.id === "turnos" && <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>{turnos.length}</span>}
+              {t.id === "participantes" && <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>{participantes.length}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ padding: "22px 24px 28px" }}>
+        {tab === "turnos" && (
+          <TurnosTab turnos={turnos} addTurno={addTurno} updateTurno={updateTurno} removeTurno={removeTurno} duplicarTurno={duplicarTurno} />
+        )}
+        {tab === "participantes" && (
+          <ParticipantesTab
+            participantes={participantes} turnos={turnos} porDia={porDia}
+            nombreNuevo={nombreNuevo} setNombreNuevo={setNombreNuevo}
+            addParticipante={addParticipante} removeParticipante={removeParticipante}
+            toggleDisponibilidad={toggleDisponibilidad} updateParticipante={updateParticipante}
+          />
+        )}
+        {tab === "asignacion" && (
+          <AsignacionTab turnos={turnos} porDia={porDia} participantes={participantes}
+            asignacion={asignacion} generar={generar} nombreDe={nombreDe} cubiertos={cubiertos} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TurnosTab({ turnos, addTurno, updateTurno, removeTurno, duplicarTurno }) {
+  return (
+    <div>
+      <div style={{ fontSize: "12.5px", color: tokens.muted, marginBottom: "14px", lineHeight: 1.5 }}>
+        Define la plantilla de turnos: día, sitio y horario. Cada turno se cubre con dos personas.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "90px 1fr 100px 100px 32px", gap: "8px", padding: "0 10px", fontSize: "11px", color: tokens.muted, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          <span>Día</span><span>Sitio</span><span>Inicio</span><span>Fin</span><span></span>
+        </div>
+        {turnos.map((t) => (
+          <div key={t.id} className="at-row" style={{ display: "grid", gridTemplateColumns: "90px 1fr 100px 100px 32px 32px", gap: "8px", alignItems: "center", padding: "8px 10px", borderRadius: "8px", border: `1px solid ${tokens.border}`, background: tokens.surface }}>
+            <select className="at-select" value={t.dia} onChange={(e) => updateTurno(t.id, "dia", e.target.value)}>
+              {DIAS.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <input className="at-input" placeholder="Nombre del sitio" value={t.sitio} onChange={(e) => updateTurno(t.id, "sitio", e.target.value)} />
+            <input className="at-input at-mono" type="time" value={t.inicio} onChange={(e) => updateTurno(t.id, "inicio", e.target.value)} />
+            <input className="at-input at-mono" type="time" value={t.fin} onChange={(e) => updateTurno(t.id, "fin", e.target.value)} />
+            <button className="at-btn" onClick={() => duplicarTurno(t.id)} title="Duplicar" style={{ background: tokens.surfaceAlt, border: `1px solid ${tokens.border}`, borderRadius: "6px", color: tokens.muted, width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Copy size={13} />
+            </button>
+            <button className="at-btn" onClick={() => removeTurno(t.id)} title="Eliminar" style={{ background: tokens.surfaceAlt, border: `1px solid ${tokens.border}`, borderRadius: "6px", color: tokens.warn, width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Trash2 size={13} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button className="at-btn" onClick={addTurno} style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "6px", background: tokens.surfaceAlt, border: `1px dashed ${tokens.border}`, borderRadius: "8px", padding: "9px 14px", color: tokens.accent, fontSize: "13px", fontWeight: 600 }}>
+        <Plus size={14} /> Agregar turno
+      </button>
+    </div>
+  );
+}
+
+function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante }) {
+  return (
+    <div>
+      <div style={{ display: "flex", gap: "8px", marginBottom: "18px" }}>
+        <input className="at-input" style={{ flex: 1 }} placeholder="Nombre del participante" value={nombreNuevo}
+          onChange={(e) => setNombreNuevo(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addParticipante()} />
+        <button className="at-btn" onClick={addParticipante} style={{ display: "flex", alignItems: "center", gap: "6px", background: tokens.accent, border: "none", borderRadius: "8px", padding: "0 16px", color: "#1a1206", fontSize: "13px", fontWeight: 700 }}>
+          <Plus size={14} /> Agregar
+        </button>
+      </div>
+
+      {participantes.length === 0 && (
+        <div style={{ color: tokens.muted, fontSize: "13px", padding: "20px 0" }}>Todavía no hay participantes. Agrega el primero arriba.</div>
+      )}
+      {turnos.length === 0 && participantes.length > 0 && (
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", color: tokens.warn, fontSize: "12.5px", marginBottom: "14px" }}>
+          <AlertTriangle size={14} /> Define turnos primero para marcar disponibilidad.
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        {participantes.map((p) => (
+          <div key={p.id} style={{ border: `1px solid ${tokens.border}`, borderRadius: "10px", background: tokens.surface, padding: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+              <div className="at-display" style={{ fontSize: "14.5px", fontWeight: 700 }}>{p.nombre}</div>
+              <button className="at-btn" onClick={() => removeParticipante(p.id)} style={{ background: "transparent", border: "none", color: tokens.muted, cursor: "pointer" }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11.5px", color: tokens.muted }}>Prefiere trabajar con:</span>
+              <select className="at-select" value={p.prefPartnerId || ""} onChange={(e) => updateParticipante(p.id, "prefPartnerId", e.target.value || null)}>
+                <option value="">Sin preferencia</option>
+                {participantes.filter((x) => x.id !== p.id).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+              </select>
+              {p.prefPartnerId && (
+                <select className="at-select" value={p.prefTipo} onChange={(e) => updateParticipante(p.id, "prefTipo", e.target.value)}>
+                  <option value="blanda">Preferencia (blanda)</option>
+                  <option value="dura">Obligatorio (dura)</option>
+                </select>
+              )}
+            </div>
+
+            {turnos.length > 0 && (
+              <div>
+                <div style={{ fontSize: "11.5px", color: tokens.muted, marginBottom: "6px" }}>Disponibilidad</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {DIAS.filter((d) => porDia[d]?.length).map((d) => (
+                    <div key={d} style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                      <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted, width: "28px" }}>{d}</span>
+                      {porDia[d].map((t) => {
+                        const on = !!p.disponibilidad[t.id];
+                        return (
+                          <div key={t.id} className="at-chip at-mono" onClick={() => toggleDisponibilidad(p.id, t.id)} style={{
+                            fontSize: "10.5px", padding: "4px 8px", borderRadius: "5px",
+                            border: `1px solid ${on ? tokens.accent : tokens.border}`,
+                            background: on ? "rgba(226,166,63,0.15)" : tokens.surfaceAlt,
+                            color: on ? tokens.accent : tokens.muted,
+                          }}>
+                            {t.sitio || "Sitio"} {t.inicio}–{t.fin}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AsignacionTab({ turnos, porDia, participantes, asignacion, generar, nombreDe, cubiertos }) {
+  const puedeGenerar = turnos.length > 0 && participantes.length >= 2;
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
+        <div style={{ fontSize: "12.5px", color: tokens.muted }}>
+          {asignacion ? `${cubiertos} de ${turnos.length} turnos cubiertos` : "Genera la asignación con los datos cargados."}
+        </div>
+        <button className="at-btn" onClick={generar} disabled={!puedeGenerar} style={{
+          display: "flex", alignItems: "center", gap: "6px",
+          background: puedeGenerar ? tokens.accent : tokens.surfaceAlt, border: "none", borderRadius: "8px",
+          padding: "9px 16px", color: puedeGenerar ? "#1a1206" : tokens.muted, fontSize: "13px", fontWeight: 700,
+          cursor: puedeGenerar ? "pointer" : "not-allowed",
+        }}>
+          <Shuffle size={14} /> Generar asignación
+        </button>
+      </div>
+
+      {!puedeGenerar && (
+        <div style={{ color: tokens.muted, fontSize: "13px" }}>Necesitas al menos un turno y dos participantes con disponibilidad cargada.</div>
+      )}
+
+      {asignacion && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+          {DIAS.filter((d) => porDia[d]?.length).map((d) => (
+            <div key={d}>
+              <div className="at-mono" style={{ fontSize: "11px", color: tokens.muted, marginBottom: "8px", letterSpacing: "0.05em" }}>{d.toUpperCase()}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {porDia[d].map((t) => {
+                  const r = asignacion.resultados[t.id];
+                  const ok = r?.pair;
+                  return (
+                    <div key={t.id} style={{
+                      display: "flex", alignItems: "center", gap: "12px", padding: "10px 14px", borderRadius: "8px",
+                      border: `1px solid ${ok ? tokens.border : "rgba(217,97,79,0.4)"}`,
+                      background: ok ? tokens.surface : "rgba(217,97,79,0.06)",
+                    }}>
+                      <div className="at-mono" style={{ fontSize: "11px", color: tokens.accent2, background: tokens.surfaceAlt, padding: "4px 8px", borderRadius: "5px", whiteSpace: "nowrap" }}>
+                        {t.sitio || "Sitio"} · {t.inicio}–{t.fin}
+                      </div>
+                      <ChevronRight size={13} color={tokens.muted} />
+                      {ok ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(r.pair[0])}</span>
+                          <Link2 size={13} color={tokens.accent} />
+                          <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(r.pair[1])}</span>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: tokens.warn, fontSize: "12.5px" }}>
+                          <AlertTriangle size={13} />{r?.reason || "Sin asignar"}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<AsignadorTurnos />);
+</script>
+</body>
+</html>
