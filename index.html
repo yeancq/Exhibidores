@@ -27,6 +27,35 @@ const { useState, useMemo } = React;
 const DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+const NOMBRES_PARTICIPANTES = [
+  "Linny de Abello", "Valentina Grisales", "Luis Henao Agudelo", "Daniel Hoyos",
+  "Federico Hoyos", "Vanessa de Hoyos", "Alex Ledezma", "Osdalis Ledezma",
+  "Rocío de Lobato", "Saulo Lobato", "Angel Lozano", "Rut de Lozano",
+  "Conchi Mariñas", "Mari Jose Martín", "Alanna Mendes", "Carmen Moreno de Ancín",
+  "Isabel Nieva", "Anahí Panero", "Ana Mari Pedraza", "Rebeca Pérez de (Yagüe)",
+  "Miguel Pérez Suero", "Daniel Pérez Yagüe", "Yean Carlos Quintero",
+  "Maryuri Jaramillo de Quintero", "Montse de Racero", "Roberto Sanz",
+  "Violeta de Sanz", "Maylín Azuaje de Sousa", "Jimena Trujillo", "Sarai Vázquez",
+];
+const participantesIniciales = () => NOMBRES_PARTICIPANTES.map((nombre) => ({
+  id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", ausencias: [],
+}));
+
+const PLANTILLAS_INICIALES = [
+  { id: uid(), dia: "Mar", sitio: "Ramón y Cajal", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Mar", sitio: "La Estación", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Mié", sitio: "Ramón y Cajal", inicio: "17:30", fin: "19:30" },
+  { id: uid(), dia: "Mié", sitio: "La Estación", inicio: "17:30", fin: "19:30" },
+  { id: uid(), dia: "Jue", sitio: "Ramón y Cajal", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Jue", sitio: "La Estación", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Vie", sitio: "Ramón y Cajal", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Vie", sitio: "La Estación", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Vie", sitio: "Ramón y Cajal", inicio: "17:30", fin: "19:30" },
+  { id: uid(), dia: "Vie", sitio: "La Estación", inicio: "17:30", fin: "19:30" },
+  { id: uid(), dia: "Sáb", sitio: "Ramón y Cajal", inicio: "11:00", fin: "13:00" },
+  { id: uid(), dia: "Sáb", sitio: "Mercadillo", inicio: "11:00", fin: "13:00" },
+];
+
 const tokens = {
   bg: "#12151b",
   surface: "#181d25",
@@ -55,18 +84,41 @@ const ChevronRight = (p) => <Icon {...p}><path d="m9 18 6-6-6-6"/></Icon>;
 const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></Icon>;
 const CalendarX = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M9.5 15.5l5 5M14.5 15.5l-5 5"/></Icon>;
 
-function timeKey(slot) { return `${slot.dia}|${slot.inicio}|${slot.fin}`; }
+function timeKey(t) { return `${t.fecha}|${t.inicio}|${t.fin}`; }
 
-// ¿Está esta persona de ausencia HOY (según los periodos "desde/hasta" que cargó)?
+// ¿Está esta persona de ausencia en una fecha concreta (según los periodos "desde/hasta")?
+function estaAusenteEnFecha(p, fecha) {
+  if (!p.ausencias || p.ausencias.length === 0 || !fecha) return false;
+  return p.ausencias.some((a) => a.desde && a.hasta && a.desde <= fecha && a.hasta >= fecha);
+}
 function estaAusenteHoy(p) {
-  if (!p.ausencias || p.ausencias.length === 0) return false;
-  const hoy = new Date().toISOString().slice(0, 10);
-  return p.ausencias.some((a) => a.desde && a.hasta && a.desde <= hoy && a.hasta >= hoy);
+  return estaAusenteEnFecha(p, new Date().toISOString().slice(0, 10));
 }
 
-function assignTurnos(participantes, turnos) {
-  const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.id] && !estaAusenteHoy(p));
-  const orden = [...turnos].sort((a, b) => disponibles(a).length - disponibles(b).length);
+// Genera los turnos reales (con fecha) de un mes "YYYY-MM" a partir de las plantillas recurrentes.
+function generarTurnosMes(plantillas, mesStr) {
+  if (!mesStr) return [];
+  const [yearStr, monthStr] = mesStr.split("-");
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10) - 1;
+  if (Number.isNaN(year) || Number.isNaN(month)) return [];
+  const diasEnMes = new Date(year, month + 1, 0).getDate();
+  const generados = [];
+  for (let dia = 1; dia <= diasEnMes; dia++) {
+    const fechaObj = new Date(year, month, dia);
+    const diaAbrev = DIAS[(fechaObj.getDay() + 6) % 7]; // JS: Dom=0 -> alinear con DIAS (Lun..Dom)
+    const fecha = `${year}-${String(month + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+    plantillas.filter((pl) => pl.dia === diaAbrev).forEach((pl) => {
+      generados.push({ id: uid(), plantillaId: pl.id, fecha, dia: diaAbrev, sitio: pl.sitio, inicio: pl.inicio, fin: pl.fin });
+    });
+  }
+  generados.sort((a, b) => a.fecha === b.fecha ? a.inicio.localeCompare(b.inicio) : a.fecha.localeCompare(b.fecha));
+  return generados;
+}
+
+function assignTurnos(participantes, turnosDelMes) {
+  const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.plantillaId] && !estaAusenteEnFecha(p, t.fecha));
+  const orden = [...turnosDelMes].sort((a, b) => disponibles(a).length - disponibles(b).length);
   const asignadosCount = {};
   participantes.forEach((p) => (asignadosCount[p.id] = 0));
   const timeUsado = {};
@@ -138,29 +190,34 @@ function assignTurnos(participantes, turnos) {
 }
 
 function AsignadorTurnos() {
-  const [tab, setTab] = useState("turnos");
-  const [turnos, setTurnos] = useState([
-    { id: uid(), dia: "Lun", sitio: "Sitio A", inicio: "08:00", fin: "16:00" },
-    { id: uid(), dia: "Mar", sitio: "Sitio A", inicio: "08:00", fin: "16:00" },
-  ]);
-  const [participantes, setParticipantes] = useState([]);
+  const [tab, setTab] = useState("plantillas");
+  const [plantillas, setPlantillas] = useState(PLANTILLAS_INICIALES);
+  const [participantes, setParticipantes] = useState(participantesIniciales);
   const [nombreNuevo, setNombreNuevo] = useState("");
+  const [mes, setMes] = useState(new Date().toISOString().slice(0, 7));
+  const [turnosDelMes, setTurnosDelMes] = useState([]);
   const [asignacion, setAsignacion] = useState(null);
 
-  const addTurno = () => setTurnos((t) => [...t, { id: uid(), dia: "Lun", sitio: "", inicio: "08:00", fin: "16:00" }]);
-  const duplicarTurno = (id) => setTurnos((t) => {
+  const addTurno = () => setPlantillas((t) => [...t, { id: uid(), dia: "Lun", sitio: "", inicio: "08:00", fin: "16:00" }]);
+  const duplicarTurno = (id) => setPlantillas((t) => {
     const orig = t.find((x) => x.id === id);
     if (!orig) return t;
     return [...t, { ...orig, id: uid() }];
   });
-  const updateTurno = (id, field, value) => setTurnos((t) => t.map((x) => (x.id === id ? { ...x, [field]: value } : x)));
+  const updateTurno = (id, field, value) => setPlantillas((t) => t.map((x) => (x.id === id ? { ...x, [field]: value } : x)));
   const removeTurno = (id) => {
-    setTurnos((t) => t.filter((x) => x.id !== id));
+    setPlantillas((t) => t.filter((x) => x.id !== id));
     setParticipantes((ps) => ps.map((p) => {
       const disp = { ...p.disponibilidad };
       delete disp[id];
       return { ...p, disponibilidad: disp };
     }));
+    setTurnosDelMes((tm) => tm.filter((t) => t.plantillaId !== id));
+    setAsignacion(null);
+  };
+
+  const generarMes = () => {
+    setTurnosDelMes(generarTurnosMes(plantillas, mes));
     setAsignacion(null);
   };
 
@@ -207,16 +264,16 @@ function AsignadorTurnos() {
   };
 
   const generar = () => {
-    const { resultados, asignadosCount } = assignTurnos(participantes, turnos);
+    const { resultados, asignadosCount } = assignTurnos(participantes, turnosDelMes);
     setAsignacion({ resultados, asignadosCount });
   };
 
   const porDia = useMemo(() => {
     const map = {};
     DIAS.forEach((d) => (map[d] = []));
-    turnos.forEach((t) => { if (!map[t.dia]) map[t.dia] = []; map[t.dia].push(t); });
+    plantillas.forEach((t) => { if (!map[t.dia]) map[t.dia] = []; map[t.dia].push(t); });
     return map;
-  }, [turnos]);
+  }, [plantillas]);
 
   const nombreDe = (id) => participantes.find((p) => p.id === id)?.nombre || "?";
   const cubiertos = asignacion ? Object.values(asignacion.resultados).filter((r) => r.pair).length : 0;
@@ -253,7 +310,7 @@ function AsignadorTurnos() {
 
       <div style={{ display: "flex", gap: "2px", padding: "10px 24px 0", background: tokens.surface, borderBottom: `1px solid ${tokens.border}` }}>
         {[
-          { id: "turnos", label: "Turnos", icon: CalendarClock },
+          { id: "plantillas", label: "Plantillas", icon: CalendarClock },
           { id: "participantes", label: "Participantes", icon: Users },
           { id: "asignacion", label: "Asignación", icon: Shuffle },
         ].map((t) => {
@@ -266,7 +323,7 @@ function AsignadorTurnos() {
               color: active ? tokens.accent : tokens.muted, fontSize: "13px", fontWeight: 600, cursor: "pointer",
             }}>
               <IconC size={14} />{t.label}
-              {t.id === "turnos" && <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>{turnos.length}</span>}
+              {t.id === "plantillas" && <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>{plantillas.length}</span>}
               {t.id === "participantes" && <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>{participantes.length}</span>}
             </button>
           );
@@ -274,12 +331,12 @@ function AsignadorTurnos() {
       </div>
 
       <div style={{ padding: "22px 24px 28px" }}>
-        {tab === "turnos" && (
-          <TurnosTab turnos={turnos} addTurno={addTurno} updateTurno={updateTurno} removeTurno={removeTurno} duplicarTurno={duplicarTurno} />
+        {tab === "plantillas" && (
+          <TurnosTab turnos={plantillas} addTurno={addTurno} updateTurno={updateTurno} removeTurno={removeTurno} duplicarTurno={duplicarTurno} />
         )}
         {tab === "participantes" && (
           <ParticipantesTab
-            participantes={participantes} turnos={turnos} porDia={porDia}
+            participantes={participantes} turnos={plantillas} porDia={porDia}
             nombreNuevo={nombreNuevo} setNombreNuevo={setNombreNuevo}
             addParticipante={addParticipante} removeParticipante={removeParticipante}
             toggleDisponibilidad={toggleDisponibilidad} updateParticipante={updateParticipante}
@@ -287,7 +344,8 @@ function AsignadorTurnos() {
           />
         )}
         {tab === "asignacion" && (
-          <AsignacionTab turnos={turnos} porDia={porDia} participantes={participantes}
+          <AsignacionTab plantillas={plantillas} participantes={participantes}
+            mes={mes} setMes={setMes} turnosDelMes={turnosDelMes} generarMes={generarMes}
             asignacion={asignacion} generar={generar} nombreDe={nombreDe} cubiertos={cubiertos} />
         )}
       </div>
@@ -299,7 +357,8 @@ function TurnosTab({ turnos, addTurno, updateTurno, removeTurno, duplicarTurno }
   return (
     <div>
       <div style={{ fontSize: "12.5px", color: tokens.muted, marginBottom: "14px", lineHeight: 1.5 }}>
-        Define la plantilla de turnos: día, sitio y horario. Cada turno se cubre con dos personas.
+        Define los turnos recurrentes: día de la semana, sitio y horario. Cada turno se cubre con dos personas.
+        Estas plantillas se repiten todas las semanas — en la pestaña Asignación las conviertes en fechas concretas de un mes.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         <div style={{ display: "grid", gridTemplateColumns: "90px 1fr 100px 100px 32px", gap: "8px", padding: "0 10px", fontSize: "11px", color: tokens.muted, textTransform: "uppercase", letterSpacing: "0.04em" }}>
@@ -436,52 +495,100 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
   );
 }
 
-function AsignacionTab({ turnos, porDia, participantes, asignacion, generar, nombreDe, cubiertos }) {
-  const puedeGenerar = turnos.length > 0 && participantes.length >= 2;
+function formatFechaLarga(fecha, dia) {
+  if (!fecha) return "";
+  const [y, m, d] = fecha.split("-");
+  return `${dia} ${d}/${m}/${y}`;
+}
+
+function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, generarMes, asignacion, generar, nombreDe, cubiertos }) {
+  const puedeGenerarMes = plantillas.length > 0 && !!mes;
+  const puedeAsignar = turnosDelMes.length > 0 && participantes.length >= 2;
+
+  const porFecha = useMemo(() => {
+    const map = {};
+    turnosDelMes.forEach((t) => {
+      if (!map[t.fecha]) map[t.fecha] = [];
+      map[t.fecha].push(t);
+    });
+    return map;
+  }, [turnosDelMes]);
+  const fechasOrdenadas = Object.keys(porFecha).sort();
+
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
-        <div style={{ fontSize: "12.5px", color: tokens.muted }}>
-          {asignacion ? `${cubiertos} de ${turnos.length} turnos cubiertos` : "Genera la asignación con los datos cargados."}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: "11px", color: tokens.muted, marginBottom: "4px" }}>Mes a programar</div>
+          <input className="at-input at-mono" type="month" value={mes} onChange={(e) => setMes(e.target.value)} />
         </div>
-        <button className="at-btn" onClick={generar} disabled={!puedeGenerar} style={{
+        <button className="at-btn" onClick={generarMes} disabled={!puedeGenerarMes} style={{
           display: "flex", alignItems: "center", gap: "6px",
-          background: puedeGenerar ? tokens.accent : tokens.surfaceAlt, border: "none", borderRadius: "8px",
-          padding: "9px 16px", color: puedeGenerar ? "#1a1206" : tokens.muted, fontSize: "13px", fontWeight: 700,
-          cursor: puedeGenerar ? "pointer" : "not-allowed",
+          background: puedeGenerarMes ? tokens.accent2 : tokens.surfaceAlt, border: "none", borderRadius: "8px",
+          padding: "9px 16px", color: puedeGenerarMes ? "#04211d" : tokens.muted, fontSize: "13px", fontWeight: 700,
+          cursor: puedeGenerarMes ? "pointer" : "not-allowed",
+        }}>
+          <CalendarClock size={14} /> Generar turnos de este mes
+        </button>
+        <div style={{ fontSize: "11.5px", color: tokens.muted, paddingBottom: "9px" }}>
+          {turnosDelMes.length > 0 ? `${turnosDelMes.length} turnos generados` : "Aún no has generado los turnos de este mes"}
+        </div>
+      </div>
+
+      {plantillas.length === 0 && (
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", color: tokens.warn, fontSize: "12.5px", margin: "10px 0" }}>
+          <AlertTriangle size={14} /> Primero define al menos una plantilla de turno recurrente en la pestaña Plantillas.
+        </div>
+      )}
+
+      <div style={{ height: "1px", background: tokens.border, margin: "16px 0 18px" }} />
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+        <div style={{ fontSize: "12.5px", color: tokens.muted }}>
+          {asignacion ? `${cubiertos} de ${turnosDelMes.length} turnos cubiertos` : "Genera la asignación con los turnos del mes."}
+        </div>
+        <button className="at-btn" onClick={generar} disabled={!puedeAsignar} style={{
+          display: "flex", alignItems: "center", gap: "6px",
+          background: puedeAsignar ? tokens.accent : tokens.surfaceAlt, border: "none", borderRadius: "8px",
+          padding: "9px 16px", color: puedeAsignar ? "#1a1206" : tokens.muted, fontSize: "13px", fontWeight: 700,
+          cursor: puedeAsignar ? "pointer" : "not-allowed",
         }}>
           <Shuffle size={14} /> Generar asignación
         </button>
       </div>
 
-      {!puedeGenerar && (
-        <div style={{ color: tokens.muted, fontSize: "13px" }}>Necesitas al menos un turno y dos participantes con disponibilidad cargada.</div>
+      {!puedeAsignar && (
+        <div style={{ color: tokens.muted, fontSize: "13px" }}>Necesitas turnos generados para este mes y al menos dos participantes con disponibilidad cargada.</div>
       )}
 
       <div style={{ color: tokens.muted, fontSize: "11.5px", marginBottom: "14px", lineHeight: 1.5 }}>
-        Nota: las personas marcadas como "Ausente hoy" en la pestaña Participantes no se asignan al generar.
+        Nota: si alguien tiene un periodo de ausencia que cubre la fecha exacta de un turno, no se le asigna ese turno.
       </div>
 
-      {asignacion && (
+      {fechasOrdenadas.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
-          {DIAS.filter((d) => porDia[d]?.length).map((d) => (
-            <div key={d}>
-              <div className="at-mono" style={{ fontSize: "11px", color: tokens.muted, marginBottom: "8px", letterSpacing: "0.05em" }}>{d.toUpperCase()}</div>
+          {fechasOrdenadas.map((fecha) => (
+            <div key={fecha}>
+              <div className="at-mono" style={{ fontSize: "11px", color: tokens.muted, marginBottom: "8px", letterSpacing: "0.05em" }}>
+                {formatFechaLarga(fecha, porFecha[fecha][0].dia).toUpperCase()}
+              </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {porDia[d].map((t) => {
-                  const r = asignacion.resultados[t.id];
+                {porFecha[fecha].map((t) => {
+                  const r = asignacion ? asignacion.resultados[t.id] : null;
                   const ok = r?.pair;
                   return (
                     <div key={t.id} style={{
                       display: "flex", alignItems: "center", gap: "12px", padding: "10px 14px", borderRadius: "8px",
-                      border: `1px solid ${ok ? tokens.border : "rgba(217,97,79,0.4)"}`,
-                      background: ok ? tokens.surface : "rgba(217,97,79,0.06)",
+                      border: `1px solid ${!asignacion ? tokens.border : ok ? tokens.border : "rgba(217,97,79,0.4)"}`,
+                      background: !asignacion ? tokens.surface : ok ? tokens.surface : "rgba(217,97,79,0.06)",
                     }}>
                       <div className="at-mono" style={{ fontSize: "11px", color: tokens.accent2, background: tokens.surfaceAlt, padding: "4px 8px", borderRadius: "5px", whiteSpace: "nowrap" }}>
                         {t.sitio || "Sitio"} · {t.inicio}–{t.fin}
                       </div>
                       <ChevronRight size={13} color={tokens.muted} />
-                      {ok ? (
+                      {!asignacion ? (
+                        <span style={{ fontSize: "12.5px", color: tokens.muted }}>Sin asignar todavía</span>
+                      ) : ok ? (
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(r.pair[0])}</span>
                           <Link2 size={13} color={tokens.accent} />
