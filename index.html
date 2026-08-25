@@ -6,10 +6,10 @@
 <title>Asignador de turnos</title>
 <link rel="icon" href="data:,">
 <style>
-  html, body { margin: 0; padding: 0; background: #0b0d11; }
-  body { display: flex; justify-content: center; padding: 24px 12px; }
-  #root { width: 100%; max-width: 900px; }
-  * { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #0b0d11; }
+body { display: flex; justify-content: center; padding: 24px 12px; }
+#root { width: 100%; max-width: 900px; }
+* { box-sizing: border-box; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
@@ -17,11 +17,10 @@
 </head>
 <body>
 <div id="root">
-  <p style="color:#8a93a3;font-family:sans-serif;font-size:13px;padding:16px;">
-    Cargando… si esto no cambia en unos segundos, tu conexión está bloqueando los scripts externos (React/Babel). Prueba con otra red o navegador.
-  </p>
+<p style="color:#8a93a3;font-family:sans-serif;font-size:13px;padding:16px;">
+Cargando… si esto no cambia en unos segundos, tu conexión está bloqueando los scripts externos (React/Babel). Prueba con otra red o navegador.
+</p>
 </div>
-
 <script type="text/babel" data-presets="react">
 const { useState, useMemo } = React;
 
@@ -43,7 +42,7 @@ const tokens = {
 // --- Iconos SVG en línea (reemplazan a lucide-react para no depender de un bundler) ---
 const Icon = ({ children, size = 14, color = "currentColor" }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
-       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>
 );
 const Plus = (p) => <Icon {...p}><path d="M12 5v14M5 12h14"/></Icon>;
 const Trash2 = (p) => <Icon {...p}><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></Icon>;
@@ -54,18 +53,24 @@ const Link2 = (p) => <Icon {...p}><path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 
 const AlertTriangle = (p) => <Icon {...p}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></Icon>;
 const ChevronRight = (p) => <Icon {...p}><path d="m9 18 6-6-6-6"/></Icon>;
 const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></Icon>;
+const CalendarX = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M9.5 15.5l5 5M14.5 15.5l-5 5"/></Icon>;
 
 function timeKey(slot) { return `${slot.dia}|${slot.inicio}|${slot.fin}`; }
 
-function assignTurnos(participantes, turnos) {
-  const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.id]);
-  const orden = [...turnos].sort((a, b) => disponibles(a).length - disponibles(b).length);
+// ¿Está esta persona de ausencia HOY (según los periodos "desde/hasta" que cargó)?
+function estaAusenteHoy(p) {
+  if (!p.ausencias || p.ausencias.length === 0) return false;
+  const hoy = new Date().toISOString().slice(0, 10);
+  return p.ausencias.some((a) => a.desde && a.hasta && a.desde <= hoy && a.hasta >= hoy);
+}
 
+function assignTurnos(participantes, turnos) {
+  const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.id] && !estaAusenteHoy(p));
+  const orden = [...turnos].sort((a, b) => disponibles(a).length - disponibles(b).length);
   const asignadosCount = {};
   participantes.forEach((p) => (asignadosCount[p.id] = 0));
   const timeUsado = {};
   participantes.forEach((p) => (timeUsado[p.id] = new Set()));
-
   const resultados = {};
 
   for (const t of orden) {
@@ -106,16 +111,13 @@ function assignTurnos(participantes, turnos) {
         const a = pool[i], b = pool[j];
         if (a.prefTipo === "dura" && a.prefPartnerId && a.prefPartnerId !== b.id) continue;
         if (b.prefTipo === "dura" && b.prefPartnerId && b.prefPartnerId !== a.id) continue;
-
         let score = 0;
         const aQuiereB = a.prefPartnerId === b.id;
         const bQuiereA = b.prefPartnerId === a.id;
         if (aQuiereB && bQuiereA) score += 5;
         else if (aQuiereB || bQuiereA) score += 3;
-
         const carga = asignadosCount[a.id] + asignadosCount[b.id];
         score -= carga * 0.5;
-
         if (score > mejorScore) { mejorScore = score; mejor = [a, b]; }
       }
     }
@@ -165,7 +167,7 @@ function AsignadorTurnos() {
   const addParticipante = () => {
     const nombre = nombreNuevo.trim();
     if (!nombre) return;
-    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda" }]);
+    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", ausencias: [] }]);
     setNombreNuevo("");
     setAsignacion(null);
   };
@@ -181,6 +183,26 @@ function AsignadorTurnos() {
   };
   const updateParticipante = (id, field, value) => {
     setParticipantes((ps) => ps.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+    setAsignacion(null);
+  };
+
+  const addAusencia = (id) => {
+    setParticipantes((ps) => ps.map((p) => (p.id === id ? { ...p, ausencias: [...(p.ausencias || []), { desde: "", hasta: "" }] } : p)));
+    setAsignacion(null);
+  };
+  const updateAusencia = (id, idx, field, value) => {
+    setParticipantes((ps) => ps.map((p) => {
+      if (p.id !== id) return p;
+      const ausencias = p.ausencias.map((a, i) => (i === idx ? { ...a, [field]: value } : a));
+      return { ...p, ausencias };
+    }));
+    setAsignacion(null);
+  };
+  const removeAusencia = (id, idx) => {
+    setParticipantes((ps) => ps.map((p) => {
+      if (p.id !== id) return p;
+      return { ...p, ausencias: p.ausencias.filter((_, i) => i !== idx) };
+    }));
     setAsignacion(null);
   };
 
@@ -261,6 +283,7 @@ function AsignadorTurnos() {
             nombreNuevo={nombreNuevo} setNombreNuevo={setNombreNuevo}
             addParticipante={addParticipante} removeParticipante={removeParticipante}
             toggleDisponibilidad={toggleDisponibilidad} updateParticipante={updateParticipante}
+            addAusencia={addAusencia} updateAusencia={updateAusencia} removeAusencia={removeAusencia}
           />
         )}
         {tab === "asignacion" && (
@@ -306,7 +329,7 @@ function TurnosTab({ turnos, addTurno, updateTurno, removeTurno, duplicarTurno }
   );
 }
 
-function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante }) {
+function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante, addAusencia, updateAusencia, removeAusencia }) {
   return (
     <div>
       <div style={{ display: "flex", gap: "8px", marginBottom: "18px" }}>
@@ -320,6 +343,7 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
       {participantes.length === 0 && (
         <div style={{ color: tokens.muted, fontSize: "13px", padding: "20px 0" }}>Todavía no hay participantes. Agrega el primero arriba.</div>
       )}
+
       {turnos.length === 0 && participantes.length > 0 && (
         <div style={{ display: "flex", gap: "8px", alignItems: "center", color: tokens.warn, fontSize: "12.5px", marginBottom: "14px" }}>
           <AlertTriangle size={14} /> Define turnos primero para marcar disponibilidad.
@@ -327,10 +351,17 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-        {participantes.map((p) => (
-          <div key={p.id} style={{ border: `1px solid ${tokens.border}`, borderRadius: "10px", background: tokens.surface, padding: "14px" }}>
+        {participantes.map((p) => {
+          const ausente = estaAusenteHoy(p);
+          return (
+          <div key={p.id} style={{ border: `1px solid ${ausente ? "rgba(217,97,79,0.5)" : tokens.border}`, borderRadius: "10px", background: tokens.surface, padding: "14px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-              <div className="at-display" style={{ fontSize: "14.5px", fontWeight: 700 }}>{p.nombre}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div className="at-display" style={{ fontSize: "14.5px", fontWeight: 700 }}>{p.nombre}</div>
+                {ausente && (
+                  <span className="at-mono" style={{ fontSize: "10px", color: tokens.warn, background: "rgba(217,97,79,0.12)", padding: "2px 8px", borderRadius: "20px" }}>Ausente hoy</span>
+                )}
+              </div>
               <button className="at-btn" onClick={() => removeParticipante(p.id)} style={{ background: "transparent", border: "none", color: tokens.muted, cursor: "pointer" }}>
                 <Trash2 size={14} />
               </button>
@@ -351,7 +382,7 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
             </div>
 
             {turnos.length > 0 && (
-              <div>
+              <div style={{ marginBottom: "12px" }}>
                 <div style={{ fontSize: "11.5px", color: tokens.muted, marginBottom: "6px" }}>Disponibilidad</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   {DIAS.filter((d) => porDia[d]?.length).map((d) => (
@@ -375,8 +406,31 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
                 </div>
               </div>
             )}
+
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: tokens.muted, marginBottom: "6px" }}>
+                <CalendarX size={12} /> Periodos de ausencia
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {(p.ausencias || []).map((a, idx) => (
+                  <div key={idx} style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                    <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>Desde</span>
+                    <input className="at-input at-mono" type="date" value={a.desde} onChange={(e) => updateAusencia(p.id, idx, "desde", e.target.value)} style={{ padding: "5px 8px", fontSize: "12px" }} />
+                    <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>Hasta</span>
+                    <input className="at-input at-mono" type="date" value={a.hasta} onChange={(e) => updateAusencia(p.id, idx, "hasta", e.target.value)} style={{ padding: "5px 8px", fontSize: "12px" }} />
+                    <button className="at-btn" onClick={() => removeAusencia(p.id, idx)} style={{ background: tokens.surfaceAlt, border: `1px solid ${tokens.border}`, borderRadius: "6px", color: tokens.warn, width: "28px", height: "28px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button className="at-btn" onClick={() => addAusencia(p.id)} style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "6px", background: "transparent", border: `1px dashed ${tokens.border}`, borderRadius: "6px", padding: "6px 10px", color: tokens.muted, fontSize: "11.5px" }}>
+                <Plus size={12} /> Añadir periodo de ausencia
+              </button>
+            </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -403,6 +457,10 @@ function AsignacionTab({ turnos, porDia, participantes, asignacion, generar, nom
       {!puedeGenerar && (
         <div style={{ color: tokens.muted, fontSize: "13px" }}>Necesitas al menos un turno y dos participantes con disponibilidad cargada.</div>
       )}
+
+      <div style={{ color: tokens.muted, fontSize: "11.5px", marginBottom: "14px", lineHeight: 1.5 }}>
+        Nota: las personas marcadas como "Ausente hoy" en la pestaña Participantes no se asignan al generar.
+      </div>
 
       {asignacion && (
         <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
