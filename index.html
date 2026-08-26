@@ -38,7 +38,7 @@ const NOMBRES_PARTICIPANTES = [
   "Violeta de Sanz", "Maylín Azuaje de Sousa", "Jimena Trujillo", "Sarai Vázquez",
 ];
 const participantesIniciales = () => NOMBRES_PARTICIPANTES.map((nombre) => ({
-  id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [],
+  id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4,
 }));
 
 const PLANTILLAS_INICIALES = [
@@ -105,6 +105,12 @@ const CalendarX = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="17" r
 
 function timeKey(t) { return `${t.fecha}|${t.inicio}|${t.fin}`; }
 
+function diffDias(fechaA, fechaB) {
+  const a = new Date(fechaA + "T00:00:00");
+  const b = new Date(fechaB + "T00:00:00");
+  return Math.round((b - a) / 86400000);
+}
+
 // ¿Está esta persona de ausencia en una fecha concreta (según los periodos "desde/hasta")?
 function estaAusenteEnFecha(p, fecha) {
   if (!p.ausencias || p.ausencias.length === 0 || !fecha) return false;
@@ -151,16 +157,48 @@ function assignTurnos(participantes, turnosDelMes) {
   participantes.forEach((p) => (asignadosCount[p.id] = 0));
   const timeUsado = {};
   participantes.forEach((p) => (timeUsado[p.id] = new Set()));
+  const fechasAsignadas = {};
+  participantes.forEach((p) => (fechasAsignadas[p.id] = []));
   const resultados = {};
+
+  // Días totales del mes que se está asignando (para calcular el espaciado ideal de cada persona).
+  const diasEnMes = turnosDelMes.length
+    ? new Date(parseInt(turnosDelMes[0].fecha.slice(0, 4), 10), parseInt(turnosDelMes[0].fecha.slice(5, 7), 10), 0).getDate()
+    : 30;
+
+  // Espaciado ideal en días entre dos turnos de una misma persona, según su máximo mensual.
+  // Ej: máximo 2 -> cada ~15 días; máximo 4 -> cada ~7 días.
+  const espaciadoIdeal = (p) => {
+    const max = p.maxTurnosMes ?? 4;
+    return max > 0 ? diasEnMes / max : diasEnMes;
+  };
+
+  // Qué tan "lista" está una persona para un nuevo turno en esta fecha, según cuándo fue su turno más cercano.
+  // >= 0 favorable (ya pasó su espaciado ideal o es su primer turno); negativo = penaliza asignarla demasiado pronto.
+  const puntajeEspaciado = (p, fecha) => {
+    const fechas = fechasAsignadas[p.id];
+    if (fechas.length === 0) return 0.5;
+    const distanciaMin = Math.min(...fechas.map((f) => Math.abs(diffDias(f, fecha))));
+    const ideal = espaciadoIdeal(p);
+    const ratio = ideal > 0 ? distanciaMin / ideal : 1;
+    if (ratio < 1) return (ratio - 1) * 6; // penalización fuerte por quedar muy seguido
+    return Math.min(ratio - 1, 1) * 0.5; // pequeño extra por haber esperado lo suficiente
+  };
 
   for (const t of orden) {
     const tk = timeKey(t);
-    let pool = disponibles(t).filter((p) => !timeUsado[p.id].has(tk));
+    let pool = disponibles(t).filter((p) => !timeUsado[p.id].has(tk) && asignadosCount[p.id] < (p.maxTurnosMes ?? Infinity));
 
     if (pool.length < 2) {
+      const disponiblesSinLimite = disponibles(t).filter((p) => !timeUsado[p.id].has(tk));
+      const bloqueadoPorLimite = disponiblesSinLimite.length >= 2 && pool.length < disponiblesSinLimite.length;
       resultados[t.id] = {
         pair: null,
-        reason: pool.length === 0 ? "Nadie disponible para este turno." : "Solo hay una persona disponible; falta pareja.",
+        reason: disponiblesSinLimite.length === 0
+          ? "Nadie disponible para este turno."
+          : bloqueadoPorLimite
+            ? "Las personas disponibles ya alcanzaron su máximo de participaciones este mes."
+            : "Solo hay una persona disponible; falta pareja.",
       };
       continue;
     }
@@ -201,7 +239,8 @@ function assignTurnos(participantes, turnosDelMes) {
         if (aQuiereB && bQuiereA) score += 5;
         else if (aQuiereB || bQuiereA) score += 3;
         const carga = asignadosCount[a.id] + asignadosCount[b.id];
-        score -= carga * 0.5;
+        score -= carga * 0.3;
+        score += puntajeEspaciado(a, t.fecha) + puntajeEspaciado(b, t.fecha);
         if (score > mejorScore) { mejorScore = score; mejor = [a, b]; }
       }
     }
@@ -216,6 +255,8 @@ function assignTurnos(participantes, turnosDelMes) {
     asignadosCount[mejor[1].id]++;
     timeUsado[mejor[0].id].add(tk);
     timeUsado[mejor[1].id].add(tk);
+    fechasAsignadas[mejor[0].id].push(t.fecha);
+    fechasAsignadas[mejor[1].id].push(t.fecha);
   }
 
   return { resultados, asignadosCount };
@@ -280,7 +321,7 @@ function AsignadorTurnos() {
   const addParticipante = () => {
     const nombre = nombreNuevo.trim();
     if (!nombre) return;
-    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [] }]);
+    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4 }]);
     setNombreNuevo("");
     setAsignacion(null);
   };
@@ -539,6 +580,15 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
               )}
             </div>
 
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11.5px", color: tokens.muted }}>Máximo de participaciones por mes:</span>
+              <select className="at-select" value={p.maxTurnosMes ?? 4} onChange={(e) => updateParticipante(p.id, "maxTurnosMes", parseInt(e.target.value, 10))}>
+                {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </div>
+
             {turnos.length > 0 && (
               <div style={{ marginBottom: "12px" }}>
                 <div style={{ fontSize: "11.5px", color: tokens.muted, marginBottom: "6px" }}>
@@ -688,6 +738,8 @@ function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, g
 
       <div style={{ color: tokens.muted, fontSize: "11.5px", marginBottom: "14px", lineHeight: 1.5 }}>
         Nota: si alguien tiene un periodo de ausencia que cubre la fecha exacta de un turno, no se le asigna ese turno.
+        El sistema también intenta repartir las participaciones de cada persona de forma pareja a lo largo del mes
+        (por ejemplo, si su máximo es 2, procura separarlas ~15 días; si es 4, procura una por semana).
       </div>
 
       {fechasOrdenadas.length > 0 && (
