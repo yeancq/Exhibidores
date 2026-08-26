@@ -38,7 +38,7 @@ const NOMBRES_PARTICIPANTES = [
   "Violeta de Sanz", "Maylín Azuaje de Sousa", "Jimena Trujillo", "Sarai Vázquez",
 ];
 const participantesIniciales = () => NOMBRES_PARTICIPANTES.map((nombre) => ({
-  id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", ausencias: [],
+  id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [],
 }));
 
 const PLANTILLAS_INICIALES = [
@@ -135,6 +135,15 @@ function generarTurnosMes(plantillas, mesStr) {
   return generados;
 }
 
+// Preferencia efectiva de una persona para un turno concreto:
+// prioriza la preferencia específica de ese turno; si no hay, usa la preferencia general.
+function obtenerPreferencia(p, plantillaId) {
+  const especifica = p.preferenciasPorTurno && p.preferenciasPorTurno[plantillaId];
+  if (especifica && especifica.partnerId) return especifica;
+  if (p.prefPartnerId) return { partnerId: p.prefPartnerId, tipo: p.prefTipo || "blanda" };
+  return null;
+}
+
 function assignTurnos(participantes, turnosDelMes) {
   const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.plantillaId] && !estaAusenteEnFecha(p, t.fecha));
   const orden = [...turnosDelMes].sort((a, b) => disponibles(a).length - disponibles(b).length);
@@ -158,14 +167,16 @@ function assignTurnos(participantes, turnosDelMes) {
 
     const poolIds = new Set(pool.map((p) => p.id));
     pool = pool.filter((p) => {
-      if (p.prefTipo === "dura" && p.prefPartnerId) return poolIds.has(p.prefPartnerId);
+      const pref = obtenerPreferencia(p, t.plantillaId);
+      if (pref && pref.tipo === "dura") return poolIds.has(pref.partnerId);
       return true;
     });
 
     if (pool.length < 2) {
-      const bloqueado = disponibles(t).find(
-        (p) => p.prefTipo === "dura" && p.prefPartnerId && !poolIds.has(p.prefPartnerId)
-      );
+      const bloqueado = disponibles(t).find((p) => {
+        const pref = obtenerPreferencia(p, t.plantillaId);
+        return pref && pref.tipo === "dura" && !poolIds.has(pref.partnerId);
+      });
       resultados[t.id] = {
         pair: null,
         reason: bloqueado
@@ -180,11 +191,13 @@ function assignTurnos(participantes, turnosDelMes) {
     for (let i = 0; i < pool.length; i++) {
       for (let j = i + 1; j < pool.length; j++) {
         const a = pool[i], b = pool[j];
-        if (a.prefTipo === "dura" && a.prefPartnerId && a.prefPartnerId !== b.id) continue;
-        if (b.prefTipo === "dura" && b.prefPartnerId && b.prefPartnerId !== a.id) continue;
+        const prefA = obtenerPreferencia(a, t.plantillaId);
+        const prefB = obtenerPreferencia(b, t.plantillaId);
+        if (prefA && prefA.tipo === "dura" && prefA.partnerId !== b.id) continue;
+        if (prefB && prefB.tipo === "dura" && prefB.partnerId !== a.id) continue;
         let score = 0;
-        const aQuiereB = a.prefPartnerId === b.id;
-        const bQuiereA = b.prefPartnerId === a.id;
+        const aQuiereB = prefA && prefA.partnerId === b.id;
+        const bQuiereA = prefB && prefB.partnerId === a.id;
         if (aQuiereB && bQuiereA) score += 5;
         else if (aQuiereB || bQuiereA) score += 3;
         const carga = asignadosCount[a.id] + asignadosCount[b.id];
@@ -267,12 +280,20 @@ function AsignadorTurnos() {
   const addParticipante = () => {
     const nombre = nombreNuevo.trim();
     if (!nombre) return;
-    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", ausencias: [] }]);
+    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [] }]);
     setNombreNuevo("");
     setAsignacion(null);
   };
   const removeParticipante = (id) => {
-    setParticipantes((ps) => ps.filter((p) => p.id !== id).map((p) => (p.prefPartnerId === id ? { ...p, prefPartnerId: null } : p)));
+    setParticipantes((ps) => ps.filter((p) => p.id !== id).map((p) => {
+      const limpio = p.prefPartnerId === id ? { ...p, prefPartnerId: null } : p;
+      const preferenciasPorTurno = { ...(limpio.preferenciasPorTurno || {}) };
+      let cambio = false;
+      Object.keys(preferenciasPorTurno).forEach((tid) => {
+        if (preferenciasPorTurno[tid]?.partnerId === id) { delete preferenciasPorTurno[tid]; cambio = true; }
+      });
+      return cambio ? { ...limpio, preferenciasPorTurno } : limpio;
+    }));
     setAsignacion(null);
   };
   const toggleDisponibilidad = (participanteId, turnoId) => {
@@ -283,6 +304,16 @@ function AsignadorTurnos() {
   };
   const updateParticipante = (id, field, value) => {
     setParticipantes((ps) => ps.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+    setAsignacion(null);
+  };
+  const setPreferenciaTurno = (participanteId, turnoId, partnerId, tipo) => {
+    setParticipantes((ps) => ps.map((p) => {
+      if (p.id !== participanteId) return p;
+      const preferenciasPorTurno = { ...(p.preferenciasPorTurno || {}) };
+      if (!partnerId) delete preferenciasPorTurno[turnoId];
+      else preferenciasPorTurno[turnoId] = { partnerId, tipo: tipo || "blanda" };
+      return { ...p, preferenciasPorTurno };
+    }));
     setAsignacion(null);
   };
 
@@ -404,6 +435,7 @@ function AsignadorTurnos() {
             nombreNuevo={nombreNuevo} setNombreNuevo={setNombreNuevo}
             addParticipante={addParticipante} removeParticipante={removeParticipante}
             toggleDisponibilidad={toggleDisponibilidad} updateParticipante={updateParticipante}
+            setPreferenciaTurno={setPreferenciaTurno}
             addAusencia={addAusencia} updateAusencia={updateAusencia} removeAusencia={removeAusencia}
           />
         )}
@@ -455,7 +487,7 @@ function TurnosTab({ turnos, addTurno, updateTurno, removeTurno, duplicarTurno }
   );
 }
 
-function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante, addAusencia, updateAusencia, removeAusencia }) {
+function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante, setPreferenciaTurno, addAusencia, updateAusencia, removeAusencia }) {
   return (
     <div>
       <div style={{ display: "flex", gap: "8px", marginBottom: "18px" }}>
@@ -494,7 +526,7 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
             </div>
 
             <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
-              <span style={{ fontSize: "11.5px", color: tokens.muted }}>Prefiere trabajar con:</span>
+              <span style={{ fontSize: "11.5px", color: tokens.muted }}>Preferencia general (se usa si no hay una específica por turno):</span>
               <select className="at-select" value={p.prefPartnerId || ""} onChange={(e) => updateParticipante(p.id, "prefPartnerId", e.target.value || null)}>
                 <option value="">Sin preferencia</option>
                 {participantes.filter((x) => x.id !== p.id).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
@@ -509,24 +541,50 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
 
             {turnos.length > 0 && (
               <div style={{ marginBottom: "12px" }}>
-                <div style={{ fontSize: "11.5px", color: tokens.muted, marginBottom: "6px" }}>Disponibilidad</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <div style={{ fontSize: "11.5px", color: tokens.muted, marginBottom: "6px" }}>
+                  Disponibilidad y preferencia específica por turno
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   {DIAS.filter((d) => porDia[d]?.length).map((d) => (
-                    <div key={d} style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-                      <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted, width: "28px" }}>{d}</span>
-                      {porDia[d].map((t) => {
-                        const on = !!p.disponibilidad[t.id];
-                        return (
-                          <div key={t.id} className="at-chip at-mono" onClick={() => toggleDisponibilidad(p.id, t.id)} style={{
-                            fontSize: "10.5px", padding: "4px 8px", borderRadius: "5px",
-                            border: `1px solid ${on ? tokens.accent : tokens.border}`,
-                            background: on ? "rgba(226,166,63,0.15)" : tokens.surfaceAlt,
-                            color: on ? tokens.accent : tokens.muted,
-                          }}>
-                            {t.sitio || "Sitio"} {t.inicio}–{t.fin}
-                          </div>
-                        );
-                      })}
+                    <div key={d}>
+                      <span className="at-mono" style={{ fontSize: "10.5px", color: tokens.muted }}>{d}</span>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "3px" }}>
+                        {porDia[d].map((t) => {
+                          const on = !!p.disponibilidad[t.id];
+                          const pref = p.preferenciasPorTurno && p.preferenciasPorTurno[t.id];
+                          return (
+                            <div key={t.id} style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                              <div className="at-chip at-mono" onClick={() => toggleDisponibilidad(p.id, t.id)} style={{
+                                fontSize: "10.5px", padding: "4px 8px", borderRadius: "5px",
+                                border: `1px solid ${on ? tokens.accent : tokens.border}`,
+                                background: on ? "rgba(226,166,63,0.15)" : tokens.surfaceAlt,
+                                color: on ? tokens.accent : tokens.muted,
+                              }}>
+                                {t.sitio || "Sitio"} {t.inicio}–{t.fin}
+                              </div>
+                              {on && (
+                                <>
+                                  <span style={{ fontSize: "10px", color: tokens.muted }}>con</span>
+                                  <select className="at-select" style={{ fontSize: "10.5px", padding: "3px 6px" }}
+                                    value={pref?.partnerId || ""}
+                                    onChange={(e) => setPreferenciaTurno(p.id, t.id, e.target.value || null, pref?.tipo || "blanda")}>
+                                    <option value="">General (sin preferencia específica aquí)</option>
+                                    {participantes.filter((x) => x.id !== p.id).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+                                  </select>
+                                  {pref?.partnerId && (
+                                    <select className="at-select" style={{ fontSize: "10.5px", padding: "3px 6px" }}
+                                      value={pref.tipo}
+                                      onChange={(e) => setPreferenciaTurno(p.id, t.id, pref.partnerId, e.target.value)}>
+                                      <option value="blanda">Preferencia</option>
+                                      <option value="dura">Obligatorio</option>
+                                    </select>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ))}
                 </div>
