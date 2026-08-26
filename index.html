@@ -22,7 +22,7 @@ Cargando… si esto no cambia en unos segundos, tu conexión está bloqueando lo
 </p>
 </div>
 <script type="text/babel" data-presets="react">
-const { useState, useMemo } = React;
+const { useState, useMemo, useEffect } = React;
 
 const DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -55,6 +55,25 @@ const PLANTILLAS_INICIALES = [
   { id: uid(), dia: "Sáb", sitio: "Ramón y Cajal", inicio: "11:00", fin: "13:00" },
   { id: uid(), dia: "Sáb", sitio: "Mercadillo", inicio: "11:00", fin: "13:00" },
 ];
+
+const STORAGE_KEY = "asignador-turnos-exhibidores-v1";
+function cargarGuardado() {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+const GUARDADO = cargarGuardado();
+
+const MESES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+function formatMesLargo(mesStr) {
+  if (!mesStr) return "";
+  const [y, m] = mesStr.split("-");
+  return `${MESES_LARGO[parseInt(m, 10) - 1]} ${y}`;
+}
 
 const tokens = {
   bg: "#12151b",
@@ -191,12 +210,30 @@ function assignTurnos(participantes, turnosDelMes) {
 
 function AsignadorTurnos() {
   const [tab, setTab] = useState("plantillas");
-  const [plantillas, setPlantillas] = useState(PLANTILLAS_INICIALES);
-  const [participantes, setParticipantes] = useState(participantesIniciales);
+  const [plantillas, setPlantillas] = useState(() => GUARDADO?.plantillas || PLANTILLAS_INICIALES);
+  const [participantes, setParticipantes] = useState(() => GUARDADO?.participantes || participantesIniciales());
   const [nombreNuevo, setNombreNuevo] = useState("");
-  const [mes, setMes] = useState(new Date().toISOString().slice(0, 7));
-  const [turnosDelMes, setTurnosDelMes] = useState([]);
-  const [asignacion, setAsignacion] = useState(null);
+  const [mes, setMesState] = useState(() => GUARDADO?.ultimoMes || new Date().toISOString().slice(0, 7));
+  const [historial, setHistorial] = useState(() => GUARDADO?.historial || {});
+  const guardadoDelMes = historial[mes];
+  const [turnosDelMes, setTurnosDelMes] = useState(() => guardadoDelMes?.turnosDelMes || []);
+  const [asignacion, setAsignacion] = useState(() => guardadoDelMes?.asignacion || null);
+
+  // Guarda automáticamente en este navegador cada vez que algo cambia.
+  useEffect(() => {
+    try {
+      if (typeof localStorage === "undefined") return;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ plantillas, participantes, historial, ultimoMes: mes }));
+    } catch (e) { /* almacenamiento no disponible */ }
+  }, [plantillas, participantes, historial, mes]);
+
+  // Al cambiar de mes, recupera lo que ya estaba grabado para ese mes (si existe).
+  const cambiarMes = (nuevoMes) => {
+    setMesState(nuevoMes);
+    const g = historial[nuevoMes];
+    setTurnosDelMes(g?.turnosDelMes || []);
+    setAsignacion(g?.asignacion || null);
+  };
 
   const addTurno = () => setPlantillas((t) => [...t, { id: uid(), dia: "Lun", sitio: "", inicio: "08:00", fin: "16:00" }]);
   const duplicarTurno = (id) => setPlantillas((t) => {
@@ -214,11 +251,17 @@ function AsignadorTurnos() {
     }));
     setTurnosDelMes((tm) => tm.filter((t) => t.plantillaId !== id));
     setAsignacion(null);
+    setHistorial((h) => {
+      if (!h[mes]) return h;
+      return { ...h, [mes]: { turnosDelMes: h[mes].turnosDelMes.filter((t) => t.plantillaId !== id), asignacion: null } };
+    });
   };
 
   const generarMes = () => {
-    setTurnosDelMes(generarTurnosMes(plantillas, mes));
+    const nuevos = generarTurnosMes(plantillas, mes);
+    setTurnosDelMes(nuevos);
     setAsignacion(null);
+    setHistorial((h) => ({ ...h, [mes]: { turnosDelMes: nuevos, asignacion: null } }));
   };
 
   const addParticipante = () => {
@@ -265,7 +308,9 @@ function AsignadorTurnos() {
 
   const generar = () => {
     const { resultados, asignadosCount } = assignTurnos(participantes, turnosDelMes);
-    setAsignacion({ resultados, asignadosCount });
+    const nuevaAsignacion = { resultados, asignadosCount };
+    setAsignacion(nuevaAsignacion);
+    setHistorial((h) => ({ ...h, [mes]: { turnosDelMes, asignacion: nuevaAsignacion } }));
   };
 
   const porDia = useMemo(() => {
@@ -277,6 +322,16 @@ function AsignadorTurnos() {
 
   const nombreDe = (id) => participantes.find((p) => p.id === id)?.nombre || "?";
   const cubiertos = asignacion ? Object.values(asignacion.resultados).filter((r) => r.pair).length : 0;
+
+  const reiniciarTodo = () => {
+    if (!confirm("Esto borra todos los datos guardados en este navegador (plantillas, participantes e historial de asignaciones). ¿Continuar?")) return;
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    setPlantillas(PLANTILLAS_INICIALES);
+    setParticipantes(participantesIniciales());
+    setHistorial({});
+    setTurnosDelMes([]);
+    setAsignacion(null);
+  };
 
   return (
     <div style={{
@@ -303,9 +358,17 @@ function AsignadorTurnos() {
         ::placeholder { color: ${tokens.muted}; }
       `}</style>
 
-      <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${tokens.border}`, background: tokens.surface }}>
-        <div className="at-display" style={{ fontSize: "20px", fontWeight: 700, letterSpacing: "-0.01em" }}>Asignador de turnos</div>
-        <div style={{ fontSize: "12.5px", color: tokens.muted, marginTop: "2px" }}>Turnos en pareja · disponibilidad y preferencias</div>
+      <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${tokens.border}`, background: tokens.surface, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
+        <div>
+          <div className="at-display" style={{ fontSize: "20px", fontWeight: 700, letterSpacing: "-0.01em" }}>Asignador de turnos</div>
+          <div style={{ fontSize: "12.5px", color: tokens.muted, marginTop: "2px" }}>Turnos en pareja · disponibilidad y preferencias</div>
+        </div>
+        <button className="at-btn" onClick={reiniciarTodo} title="Borrar todos los datos guardados en este navegador" style={{
+          background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "6px",
+          padding: "6px 10px", color: tokens.muted, fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap",
+        }}>
+          Reiniciar datos
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: "2px", padding: "10px 24px 0", background: tokens.surface, borderBottom: `1px solid ${tokens.border}` }}>
@@ -313,6 +376,7 @@ function AsignadorTurnos() {
           { id: "plantillas", label: "Plantillas", icon: CalendarClock },
           { id: "participantes", label: "Participantes", icon: Users },
           { id: "asignacion", label: "Asignación", icon: Shuffle },
+          { id: "calendario", label: "Calendario", icon: CalendarX },
         ].map((t) => {
           const IconC = t.icon;
           const active = tab === t.id;
@@ -345,8 +409,11 @@ function AsignadorTurnos() {
         )}
         {tab === "asignacion" && (
           <AsignacionTab plantillas={plantillas} participantes={participantes}
-            mes={mes} setMes={setMes} turnosDelMes={turnosDelMes} generarMes={generarMes}
+            mes={mes} setMes={cambiarMes} turnosDelMes={turnosDelMes} generarMes={generarMes}
             asignacion={asignacion} generar={generar} nombreDe={nombreDe} cubiertos={cubiertos} />
+        )}
+        {tab === "calendario" && (
+          <CalendarioTab mes={mes} setMes={cambiarMes} turnosDelMes={turnosDelMes} asignacion={asignacion} nombreDe={nombreDe} historial={historial} />
         )}
       </div>
     </div>
@@ -606,6 +673,116 @@ function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, g
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+function construirCeldas(mesStr) {
+  if (!mesStr) return [];
+  const [yearStr, monthStr] = mesStr.split("-");
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10) - 1;
+  if (Number.isNaN(year) || Number.isNaN(month)) return [];
+  const diasEnMes = new Date(year, month + 1, 0).getDate();
+  const primerDiaSemana = (new Date(year, month, 1).getDay() + 6) % 7; // 0 = Lunes
+  const celdas = [];
+  for (let i = 0; i < primerDiaSemana; i++) celdas.push(null);
+  for (let d = 1; d <= diasEnMes; d++) {
+    const fecha = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    celdas.push({ fecha, dia: d });
+  }
+  while (celdas.length % 7 !== 0) celdas.push(null);
+  return celdas;
+}
+
+function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, historial }) {
+  const turnosPorFecha = useMemo(() => {
+    const map = {};
+    turnosDelMes.forEach((t) => {
+      if (!map[t.fecha]) map[t.fecha] = [];
+      map[t.fecha].push(t);
+    });
+    Object.values(map).forEach((arr) => arr.sort((a, b) => a.inicio.localeCompare(b.inicio)));
+    return map;
+  }, [turnosDelMes]);
+
+  const celdas = useMemo(() => construirCeldas(mes), [mes]);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const mesesConDatos = Object.keys(historial).filter((m) => historial[m]?.turnosDelMes?.length).sort();
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+        <div>
+          <div className="at-display" style={{ fontSize: "16px", fontWeight: 700, textTransform: "capitalize" }}>{formatMesLargo(mes)}</div>
+          <div style={{ fontSize: "11.5px", color: tokens.muted, marginTop: "2px" }}>
+            {asignacion ? "Asignación grabada para este mes" : turnosDelMes.length > 0 ? "Turnos generados, falta asignar" : "Sin turnos generados para este mes"}
+          </div>
+        </div>
+        <input className="at-input at-mono" type="month" value={mes} onChange={(e) => setMes(e.target.value)} />
+      </div>
+
+      {mesesConDatos.length > 0 && (
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "16px" }}>
+          {mesesConDatos.map((m) => (
+            <div key={m} className="at-chip at-mono" onClick={() => setMes(m)} style={{
+              fontSize: "10.5px", padding: "4px 9px", borderRadius: "20px",
+              border: `1px solid ${m === mes ? tokens.accent : tokens.border}`,
+              background: m === mes ? "rgba(226,166,63,0.15)" : tokens.surfaceAlt,
+              color: m === mes ? tokens.accent : tokens.muted,
+            }}>
+              {formatMesLargo(m)}{historial[m]?.asignacion ? " ✓" : ""}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {turnosDelMes.length === 0 ? (
+        <div style={{ color: tokens.muted, fontSize: "13px" }}>
+          Ve a la pestaña Asignación, elige este mes y genera los turnos para poder verlos aquí.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "5px", marginBottom: "6px" }}>
+            {DIAS.map((d) => (
+              <div key={d} className="at-mono" style={{ fontSize: "10px", color: tokens.muted, textAlign: "center", padding: "2px 0" }}>{d}</div>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "5px" }}>
+            {celdas.map((c, i) => {
+              if (!c) return <div key={i} />;
+              const turnosDia = turnosPorFecha[c.fecha] || [];
+              const esHoy = c.fecha === hoy;
+              return (
+                <div key={i} style={{
+                  minHeight: "72px", border: `1px solid ${esHoy ? tokens.accent : tokens.border}`, borderRadius: "6px",
+                  background: tokens.surface, padding: "4px 5px", display: "flex", flexDirection: "column", gap: "3px",
+                }}>
+                  <div className="at-mono" style={{ fontSize: "10px", color: esHoy ? tokens.accent : tokens.muted }}>{c.dia}</div>
+                  {turnosDia.map((t) => {
+                    const r = asignacion ? asignacion.resultados[t.id] : null;
+                    const ok = r?.pair;
+                    return (
+                      <div key={t.id} title={`${t.sitio} ${t.inicio}–${t.fin}`} style={{
+                        fontSize: "8.5px", lineHeight: 1.35, borderRadius: "4px", padding: "2px 4px",
+                        background: !asignacion ? tokens.surfaceAlt : ok ? "rgba(73,179,166,0.14)" : "rgba(217,97,79,0.14)",
+                        color: !asignacion ? tokens.muted : ok ? tokens.accent2 : tokens.warn,
+                      }}>
+                        <div className="at-mono" style={{ fontWeight: 600 }}>{t.inicio} · {t.sitio}</div>
+                        {ok ? (
+                          <div style={{ color: tokens.text }}>{nombreDe(r.pair[0])} · {nombreDe(r.pair[1])}</div>
+                        ) : asignacion ? (
+                          <div>Sin asignar</div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
