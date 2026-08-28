@@ -406,6 +406,60 @@ function AsignadorTurnos() {
     setAsignacion(null);
   };
 
+  // --- Respaldo: exportar todo el estado a un .json descargable, e importarlo de vuelta ---
+  const exportarRespaldo = () => {
+    const datos = {
+      tipo: "asignador-turnos-respaldo",
+      version: 1,
+      exportadoEl: new Date().toISOString(),
+      plantillas, participantes, historial, ultimoMes: mes,
+    };
+    const blob = new Blob([JSON.stringify(datos, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const fecha = new Date().toISOString().slice(0, 10);
+    a.download = `respaldo-turnos-${fecha}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const importarRespaldoRef = React.useRef(null);
+  const dispararImportar = () => importarRespaldoRef.current && importarRespaldoRef.current.click();
+  const importarRespaldo = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // permite volver a elegir el mismo archivo si hace falta
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      let datos;
+      try {
+        datos = JSON.parse(ev.target.result);
+      } catch (err) {
+        alert("Ese archivo no es un respaldo válido (JSON incorrecto).");
+        return;
+      }
+      if (!datos || !Array.isArray(datos.participantes) || !Array.isArray(datos.plantillas)) {
+        alert("Ese archivo no parece ser un respaldo de esta app.");
+        return;
+      }
+      if (!confirm("Esto reemplaza los turnos, participantes e historial actuales de este dispositivo por los del respaldo. ¿Continuar?")) return;
+      setPlantillas(datos.plantillas);
+      setParticipantes(datos.participantes);
+      setHistorial(datos.historial || {});
+      const mesRestaurado = datos.ultimoMes || new Date().toISOString().slice(0, 7);
+      setMesState(mesRestaurado);
+      const g = (datos.historial || {})[mesRestaurado];
+      setTurnosDelMes(g?.turnosDelMes || []);
+      setAsignacion(g?.asignacion || null);
+      alert("Respaldo importado correctamente.");
+    };
+    reader.onerror = () => alert("No se pudo leer el archivo.");
+    reader.readAsText(file);
+  };
+
   return (
     <div style={{
       background: tokens.bg, color: tokens.text,
@@ -436,12 +490,29 @@ function AsignadorTurnos() {
           <div className="at-display" style={{ fontSize: "20px", fontWeight: 700, letterSpacing: "-0.01em" }}>Asignador de turnos</div>
           <div style={{ fontSize: "12.5px", color: tokens.muted, marginTop: "2px" }}>Turnos en pareja · disponibilidad y preferencias</div>
         </div>
-        <button className="at-btn" onClick={reiniciarTodo} title="Borrar todos los datos guardados en este navegador" style={{
-          background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "6px",
-          padding: "6px 10px", color: tokens.muted, fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap",
-        }}>
-          Reiniciar datos
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <input ref={importarRespaldoRef} type="file" accept="application/json,.json" onChange={importarRespaldo} style={{ display: "none" }} />
+          <button className="at-btn" onClick={dispararImportar} title="Restaurar un respaldo .json exportado desde otro dispositivo" style={{
+            display: "flex", alignItems: "center", gap: "6px",
+            background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "6px",
+            padding: "6px 10px", color: tokens.muted, fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap",
+          }}>
+            Importar respaldo
+          </button>
+          <button className="at-btn" onClick={exportarRespaldo} title="Descargar un archivo .json con todos los datos, para pasarlo a otro dispositivo" style={{
+            display: "flex", alignItems: "center", gap: "6px",
+            background: tokens.surfaceAlt, border: `1px solid ${tokens.border}`, borderRadius: "6px",
+            padding: "6px 10px", color: tokens.accent2, fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap",
+          }}>
+            <Download size={12} /> Exportar respaldo
+          </button>
+          <button className="at-btn" onClick={reiniciarTodo} title="Borrar todos los datos guardados en este navegador" style={{
+            background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "6px",
+            padding: "6px 10px", color: tokens.muted, fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap",
+          }}>
+            Reiniciar datos
+          </button>
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: "2px", padding: "10px 24px 0", background: tokens.surface, borderBottom: `1px solid ${tokens.border}` }}>
@@ -529,10 +600,20 @@ function TurnosTab({ turnos, addTurno, updateTurno, removeTurno, duplicarTurno }
   );
 }
 
+function normalizarTexto(s) {
+  return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
 function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante, setPreferenciaTurno, addAusencia, updateAusencia, removeAusencia }) {
+  const [busqueda, setBusqueda] = useState("");
+  const busquedaNorm = normalizarTexto(busqueda.trim());
+  const participantesFiltrados = busquedaNorm
+    ? participantes.filter((p) => normalizarTexto(p.nombre).includes(busquedaNorm))
+    : participantes;
+
   return (
     <div>
-      <div style={{ display: "flex", gap: "8px", marginBottom: "18px" }}>
+      <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
         <input className="at-input" style={{ flex: 1 }} placeholder="Nombre del participante" value={nombreNuevo}
           onChange={(e) => setNombreNuevo(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addParticipante()} />
         <button className="at-btn" onClick={addParticipante} style={{ display: "flex", alignItems: "center", gap: "6px", background: tokens.accent, border: "none", borderRadius: "8px", padding: "0 16px", color: "#1a1206", fontSize: "13px", fontWeight: 700 }}>
@@ -540,8 +621,33 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
         </button>
       </div>
 
+      {participantes.length > 0 && (
+        <div style={{ position: "relative", marginBottom: "18px" }}>
+          <input className="at-input" style={{ width: "100%", paddingLeft: "32px" }} placeholder="Buscar participante por nombre…"
+            value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
+          <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: tokens.muted, display: "flex" }}>
+            <Icon size={14}><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></Icon>
+          </span>
+          {busqueda && (
+            <button className="at-btn" onClick={() => setBusqueda("")} title="Limpiar búsqueda" style={{
+              position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)",
+              background: "transparent", border: "none", color: tokens.muted, fontSize: "16px", lineHeight: 1, cursor: "pointer", padding: "2px 4px",
+            }}>×</button>
+          )}
+          {busquedaNorm && (
+            <div style={{ fontSize: "11px", color: tokens.muted, marginTop: "6px" }}>
+              {participantesFiltrados.length} de {participantes.length} coincide{participantesFiltrados.length === 1 ? "" : "n"}
+            </div>
+          )}
+        </div>
+      )}
+
       {participantes.length === 0 && (
         <div style={{ color: tokens.muted, fontSize: "13px", padding: "20px 0" }}>Todavía no hay participantes. Agrega el primero arriba.</div>
+      )}
+
+      {busquedaNorm && participantesFiltrados.length === 0 && (
+        <div style={{ color: tokens.muted, fontSize: "13px", padding: "20px 0" }}>No se encontró ningún participante con "{busqueda}".</div>
       )}
 
       {turnos.length === 0 && participantes.length > 0 && (
@@ -551,7 +657,7 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-        {participantes.map((p) => {
+        {participantesFiltrados.map((p) => {
           const ausente = estaAusenteHoy(p);
           return (
           <div key={p.id} style={{ border: `1px solid ${ausente ? "rgba(217,97,79,0.5)" : tokens.border}`, borderRadius: "10px", background: tokens.surface, padding: "14px" }}>
