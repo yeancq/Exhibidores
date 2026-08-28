@@ -49,7 +49,7 @@ const NOMBRES_PARTICIPANTES = [
   "Raquel Camarero", "Sendoa Fernandez",
 ];
 const participantesIniciales = () => NOMBRES_PARTICIPANTES.map((nombre) => ({
-  id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4,
+  id: uid(), nombre, genero: null, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4,
 }));
 
 const PLANTILLAS_INICIALES = [
@@ -238,6 +238,7 @@ function assignTurnos(participantes, turnosDelMes) {
 
     let mejor = null;
     let mejorScore = -Infinity;
+    let hayParSinRestriccionGenero = false;
     for (let i = 0; i < pool.length; i++) {
       for (let j = i + 1; j < pool.length; j++) {
         const a = pool[i], b = pool[j];
@@ -245,9 +246,14 @@ function assignTurnos(participantes, turnosDelMes) {
         const prefB = obtenerPreferencia(b, t.plantillaId);
         if (prefA && prefA.tipo === "dura" && prefA.partnerId !== b.id) continue;
         if (prefB && prefB.tipo === "dura" && prefB.partnerId !== a.id) continue;
-        let score = 0;
         const aQuiereB = prefA && prefA.partnerId === b.id;
         const bQuiereA = prefB && prefB.partnerId === a.id;
+        const hayPreferenciaEstablecida = aQuiereB || bQuiereA;
+        hayParSinRestriccionGenero = true;
+        // Mismo género entre sí, salvo que haya una preferencia establecida entre ambos
+        // (si alguno no tiene género especificado, no se aplica la restricción).
+        if (!hayPreferenciaEstablecida && a.genero && b.genero && a.genero !== b.genero) continue;
+        let score = 0;
         if (aQuiereB && bQuiereA) score += 5;
         else if (aQuiereB || bQuiereA) score += 3;
         const carga = asignadosCount[a.id] + asignadosCount[b.id];
@@ -258,7 +264,12 @@ function assignTurnos(participantes, turnosDelMes) {
     }
 
     if (!mejor) {
-      resultados[t.id] = { pair: null, reason: "No se encontró una pareja compatible." };
+      resultados[t.id] = {
+        pair: null,
+        reason: hayParSinRestriccionGenero
+          ? "Las personas disponibles son de géneros distintos entre sí y no hay preferencia establecida."
+          : "No se encontró una pareja compatible.",
+      };
       continue;
     }
 
@@ -333,7 +344,7 @@ function AsignadorTurnos() {
   const addParticipante = () => {
     const nombre = nombreNuevo.trim();
     if (!nombre) return;
-    setParticipantes((ps) => [...ps, { id: uid(), nombre, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4 }]);
+    setParticipantes((ps) => [...ps, { id: uid(), nombre, genero: null, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4 }]);
     setNombreNuevo("");
     setAsignacion(null);
   };
@@ -675,6 +686,13 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <div className="at-display" style={{ fontSize: "14.5px", fontWeight: 700 }}>{p.nombre}</div>
+                {p.genero && (
+                  <span className="at-mono" style={{
+                    fontSize: "10px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px",
+                    color: p.genero === "H" ? tokens.accent2 : "#c98fd6",
+                    background: p.genero === "H" ? "rgba(73,179,166,0.12)" : "rgba(201,143,214,0.12)",
+                  }}>{p.genero === "H" ? "Hombre" : "Mujer"}</span>
+                )}
                 {ausente && (
                   <span className="at-mono" style={{ fontSize: "10px", color: tokens.warn, background: "rgba(217,97,79,0.12)", padding: "2px 8px", borderRadius: "20px" }}>Ausente hoy</span>
                 )}
@@ -682,6 +700,15 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
               <button className="at-btn" onClick={() => removeParticipante(p.id)} style={{ background: "transparent", border: "none", color: tokens.muted, cursor: "pointer" }}>
                 <Trash2 size={14} />
               </button>
+            </div>
+
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11.5px", color: tokens.muted }}>Género:</span>
+              <select className="at-select" value={p.genero || ""} onChange={(e) => updateParticipante(p.id, "genero", e.target.value || null)}>
+                <option value="">Sin especificar</option>
+                <option value="H">Hombre</option>
+                <option value="M">Mujer</option>
+              </select>
             </div>
 
             <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
