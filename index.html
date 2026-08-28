@@ -49,7 +49,7 @@ const NOMBRES_PARTICIPANTES = [
   "Raquel Camarero", "Sendoa Fernandez",
 ];
 const participantesIniciales = () => NOMBRES_PARTICIPANTES.map((nombre) => ({
-  id: uid(), nombre, genero: null, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4,
+  id: uid(), nombre, genero: null, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, fechasPorTurno: {}, ausencias: [], maxTurnosMes: 4,
 }));
 
 const PLANTILLAS_INICIALES = [
@@ -132,6 +132,19 @@ function estaAusenteHoy(p) {
   return estaAusenteEnFecha(p, new Date().toISOString().slice(0, 10));
 }
 
+// ¿Está esta persona disponible para ESTE turno concreto (plantilla + fecha)?
+// Combina: (1) el on/off general de disponibilidad para esa plantilla, (2) que no esté de ausencia
+// esa fecha, y (3) si definió fechas específicas para esa plantilla, que la fecha sea una de ellas.
+// Si no hay fechas específicas definidas (array vacío o inexistente), se mantiene el comportamiento
+// de siempre: disponible todas las semanas que coincidan con la plantilla.
+function disponibleParaTurno(p, t) {
+  if (!p.disponibilidad[t.plantillaId]) return false;
+  if (estaAusenteEnFecha(p, t.fecha)) return false;
+  const fechasEspecificas = p.fechasPorTurno && p.fechasPorTurno[t.plantillaId];
+  if (fechasEspecificas && fechasEspecificas.length > 0 && !fechasEspecificas.includes(t.fecha)) return false;
+  return true;
+}
+
 // Genera los turnos reales (con fecha) de un mes "YYYY-MM" a partir de las plantillas recurrentes.
 function generarTurnosMes(plantillas, mesStr) {
   if (!mesStr) return [];
@@ -187,7 +200,7 @@ function calcularRangoIntercalado(turnosDelMes) {
 }
 
 function assignTurnos(participantes, turnosDelMes) {
-  const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.plantillaId] && !estaAusenteEnFecha(p, t.fecha));
+  const disponibles = (t) => participantes.filter((p) => disponibleParaTurno(p, t));
   const rangoIntercalado = calcularRangoIntercalado(turnosDelMes);
   const orden = [...turnosDelMes].sort((a, b) => {
     const diff = disponibles(a).length - disponibles(b).length;
@@ -353,7 +366,9 @@ function AsignadorTurnos() {
     setParticipantes((ps) => ps.map((p) => {
       const disp = { ...p.disponibilidad };
       delete disp[id];
-      return { ...p, disponibilidad: disp };
+      const fechasPorTurno = { ...(p.fechasPorTurno || {}) };
+      delete fechasPorTurno[id];
+      return { ...p, disponibilidad: disp, fechasPorTurno };
     }));
     setTurnosDelMes((tm) => tm.filter((t) => t.plantillaId !== id));
     setAsignacion(null);
@@ -373,7 +388,7 @@ function AsignadorTurnos() {
   const addParticipante = () => {
     const nombre = nombreNuevo.trim();
     if (!nombre) return;
-    setParticipantes((ps) => [...ps, { id: uid(), nombre, genero: null, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, ausencias: [], maxTurnosMes: 4 }]);
+    setParticipantes((ps) => [...ps, { id: uid(), nombre, genero: null, disponibilidad: {}, prefPartnerId: null, prefTipo: "blanda", preferenciasPorTurno: {}, fechasPorTurno: {}, ausencias: [], maxTurnosMes: 4 }]);
     setNombreNuevo("");
     setAsignacion(null);
   };
@@ -406,6 +421,20 @@ function AsignadorTurnos() {
       if (!partnerId) delete preferenciasPorTurno[turnoId];
       else preferenciasPorTurno[turnoId] = { partnerId, tipo: tipo || "blanda" };
       return { ...p, preferenciasPorTurno };
+    }));
+    setAsignacion(null);
+  };
+
+  // Guarda las fechas específicas (dentro de una plantilla recurrente) en las que una persona puede
+  // ser asignada. Un array vacío o ausente significa "sin restricción" (disponible todas las semanas,
+  // el comportamiento de siempre). No toca ningún otro parámetro de la persona.
+  const setFechasTurno = (participanteId, turnoId, fechas) => {
+    setParticipantes((ps) => ps.map((p) => {
+      if (p.id !== participanteId) return p;
+      const fechasPorTurno = { ...(p.fechasPorTurno || {}) };
+      if (!fechas || fechas.length === 0) delete fechasPorTurno[turnoId];
+      else fechasPorTurno[turnoId] = fechas;
+      return { ...p, fechasPorTurno };
     }));
     setAsignacion(null);
   };
@@ -595,11 +624,11 @@ function AsignadorTurnos() {
         )}
         {tab === "participantes" && (
           <ParticipantesTab
-            participantes={participantes} turnos={plantillas} porDia={porDia}
+            participantes={participantes} turnos={plantillas} porDia={porDia} mes={mes}
             nombreNuevo={nombreNuevo} setNombreNuevo={setNombreNuevo}
             addParticipante={addParticipante} removeParticipante={removeParticipante}
             toggleDisponibilidad={toggleDisponibilidad} updateParticipante={updateParticipante}
-            setPreferenciaTurno={setPreferenciaTurno}
+            setPreferenciaTurno={setPreferenciaTurno} setFechasTurno={setFechasTurno}
             addAusencia={addAusencia} updateAusencia={updateAusencia} removeAusencia={removeAusencia}
           />
         )}
@@ -655,7 +684,77 @@ function normalizarTexto(s) {
   return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante, setPreferenciaTurno, addAusencia, updateAusencia, removeAusencia }) {
+// Pequeño calendario mensual para elegir, dentro de una plantilla recurrente (p. ej. "Sáb 11:00–13:00"),
+// las fechas concretas en las que una persona puede ser asignada. Solo se pueden marcar los días que
+// coinciden con el día de la semana de la plantilla (los demás salen atenuados). Si no hay ninguna fecha
+// marcada, no hay restricción: la persona sigue disponible todas las semanas, como antes.
+function SelectorFechasTurno({ turnoDia, fechasSeleccionadas, onChange, mesInicial }) {
+  const [mesVista, setMesVista] = useState(mesInicial);
+  const celdas = useMemo(() => construirCeldas(mesVista), [mesVista]);
+  const seleccionadas = new Set(fechasSeleccionadas || []);
+
+  const cambiarMes = (delta) => {
+    const [y, m] = mesVista.split("-").map((n) => parseInt(n, 10));
+    const d = new Date(y, m - 1 + delta, 1);
+    setMesVista(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+
+  const toggleFecha = (fecha) => {
+    const nuevas = new Set(seleccionadas);
+    if (nuevas.has(fecha)) nuevas.delete(fecha); else nuevas.add(fecha);
+    onChange(Array.from(nuevas));
+  };
+
+  return (
+    <div style={{
+      marginTop: "6px", padding: "10px", borderRadius: "8px",
+      border: `1px solid ${tokens.border}`, background: tokens.surfaceAlt, maxWidth: "280px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+        <button className="at-btn" onClick={() => cambiarMes(-1)} style={{ background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "4px", color: tokens.muted, width: "20px", height: "20px", fontSize: "11px", cursor: "pointer" }}>‹</button>
+        <span className="at-mono" style={{ fontSize: "11px", color: tokens.text, textTransform: "capitalize" }}>{formatMesLargo(mesVista)}</span>
+        <button className="at-btn" onClick={() => cambiarMes(1)} style={{ background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "4px", color: tokens.muted, width: "20px", height: "20px", fontSize: "11px", cursor: "pointer" }}>›</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "3px", marginBottom: "3px" }}>
+        {DIAS.map((d) => (
+          <div key={d} className="at-mono" style={{ fontSize: "8.5px", color: tokens.muted, textAlign: "center" }}>{d[0]}</div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "3px" }}>
+        {celdas.map((c, i) => {
+          if (!c) return <div key={i} />;
+          const diaAbrev = DIAS[(new Date(c.fecha + "T00:00:00").getDay() + 6) % 7];
+          const esDelTurno = diaAbrev === turnoDia;
+          const sel = seleccionadas.has(c.fecha);
+          return (
+            <div key={i} className={esDelTurno ? "at-chip" : ""} onClick={() => esDelTurno && toggleFecha(c.fecha)} style={{
+              textAlign: "center", fontSize: "10px", padding: "4px 0", borderRadius: "4px",
+              cursor: esDelTurno ? "pointer" : "default",
+              opacity: esDelTurno ? 1 : 0.28,
+              border: `1px solid ${sel ? tokens.accent : "transparent"}`,
+              background: sel ? "rgba(226,166,63,0.2)" : "transparent",
+              color: sel ? tokens.accent : tokens.text,
+              fontWeight: sel ? 700 : 400,
+            }}>
+              {c.dia}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ marginTop: "8px", fontSize: "10.5px", color: tokens.muted, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+        <span>{seleccionadas.size === 0 ? "Sin restricción: todas las semanas" : `${seleccionadas.size} fecha${seleccionadas.size === 1 ? "" : "s"} marcada${seleccionadas.size === 1 ? "" : "s"}`}</span>
+        {seleccionadas.size > 0 && (
+          <button className="at-btn" onClick={() => onChange([])} style={{ background: "transparent", border: "none", color: tokens.warn, fontSize: "10.5px", cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+            Quitar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ParticipantesTab({ participantes, turnos, porDia, mes, nombreNuevo, setNombreNuevo, addParticipante, removeParticipante, toggleDisponibilidad, updateParticipante, setPreferenciaTurno, setFechasTurno, addAusencia, updateAusencia, removeAusencia }) {
+  const [fechasAbiertoPara, setFechasAbiertoPara] = useState(null); // `${participanteId}:${turnoId}` o null
   const [busqueda, setBusqueda] = useState("");
   const busquedaNorm = normalizarTexto(busqueda.trim());
   const participantesFiltrados = busquedaNorm
@@ -776,34 +875,56 @@ function ParticipantesTab({ participantes, turnos, porDia, nombreNuevo, setNombr
                         {porDia[d].map((t) => {
                           const on = !!p.disponibilidad[t.id];
                           const pref = p.preferenciasPorTurno && p.preferenciasPorTurno[t.id];
+                          const fechasEspecificas = (p.fechasPorTurno && p.fechasPorTurno[t.id]) || [];
+                          const claveAbierto = `${p.id}:${t.id}`;
+                          const abierto = fechasAbiertoPara === claveAbierto;
                           return (
-                            <div key={t.id} style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-                              <div className="at-chip at-mono" onClick={() => toggleDisponibilidad(p.id, t.id)} style={{
-                                fontSize: "10.5px", padding: "4px 8px", borderRadius: "5px",
-                                border: `1px solid ${on ? tokens.accent : tokens.border}`,
-                                background: on ? "rgba(226,166,63,0.15)" : tokens.surfaceAlt,
-                                color: on ? tokens.accent : tokens.muted,
-                              }}>
-                                {t.sitio || "Sitio"} {t.inicio}–{t.fin}
-                              </div>
-                              {on && (
-                                <>
-                                  <span style={{ fontSize: "10px", color: tokens.muted }}>con</span>
-                                  <select className="at-select" style={{ fontSize: "10.5px", padding: "3px 6px" }}
-                                    value={pref?.partnerId || ""}
-                                    onChange={(e) => setPreferenciaTurno(p.id, t.id, e.target.value || null, pref?.tipo || "blanda")}>
-                                    <option value="">General (sin preferencia específica aquí)</option>
-                                    {participantes.filter((x) => x.id !== p.id).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
-                                  </select>
-                                  {pref?.partnerId && (
+                            <div key={t.id} style={{ display: "flex", flexDirection: "column" }}>
+                              <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                                <div className="at-chip at-mono" onClick={() => toggleDisponibilidad(p.id, t.id)} style={{
+                                  fontSize: "10.5px", padding: "4px 8px", borderRadius: "5px",
+                                  border: `1px solid ${on ? tokens.accent : tokens.border}`,
+                                  background: on ? "rgba(226,166,63,0.15)" : tokens.surfaceAlt,
+                                  color: on ? tokens.accent : tokens.muted,
+                                }}>
+                                  {t.sitio || "Sitio"} {t.inicio}–{t.fin}
+                                </div>
+                                {on && (
+                                  <>
+                                    <span style={{ fontSize: "10px", color: tokens.muted }}>con</span>
                                     <select className="at-select" style={{ fontSize: "10.5px", padding: "3px 6px" }}
-                                      value={pref.tipo}
-                                      onChange={(e) => setPreferenciaTurno(p.id, t.id, pref.partnerId, e.target.value)}>
-                                      <option value="blanda">Preferencia</option>
-                                      <option value="dura">Obligatorio</option>
+                                      value={pref?.partnerId || ""}
+                                      onChange={(e) => setPreferenciaTurno(p.id, t.id, e.target.value || null, pref?.tipo || "blanda")}>
+                                      <option value="">General (sin preferencia específica aquí)</option>
+                                      {participantes.filter((x) => x.id !== p.id).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
                                     </select>
-                                  )}
-                                </>
+                                    {pref?.partnerId && (
+                                      <select className="at-select" style={{ fontSize: "10.5px", padding: "3px 6px" }}
+                                        value={pref.tipo}
+                                        onChange={(e) => setPreferenciaTurno(p.id, t.id, pref.partnerId, e.target.value)}>
+                                        <option value="blanda">Preferencia</option>
+                                        <option value="dura">Obligatorio</option>
+                                      </select>
+                                    )}
+                                    <button className="at-btn at-mono" onClick={() => setFechasAbiertoPara(abierto ? null : claveAbierto)} title="Elegir fechas específicas para este turno" style={{
+                                      display: "flex", alignItems: "center", gap: "4px",
+                                      background: fechasEspecificas.length ? "rgba(226,166,63,0.15)" : "transparent",
+                                      border: `1px solid ${fechasEspecificas.length ? tokens.accent : tokens.border}`,
+                                      borderRadius: "5px", padding: "3px 7px", fontSize: "10px",
+                                      color: fechasEspecificas.length ? tokens.accent : tokens.muted, cursor: "pointer",
+                                    }}>
+                                      <CalendarClock size={11} /> Fechas{fechasEspecificas.length ? ` (${fechasEspecificas.length})` : ""}
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                              {on && abierto && (
+                                <SelectorFechasTurno
+                                  turnoDia={t.dia}
+                                  fechasSeleccionadas={fechasEspecificas}
+                                  onChange={(fechas) => setFechasTurno(p.id, t.id, fechas)}
+                                  mesInicial={mes}
+                                />
                               )}
                             </div>
                           );
@@ -1059,7 +1180,6 @@ function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, histor
             </div>
           ))}
         </div>
-      )}
 
       {turnosDelMes.length === 0 ? (
         <div style={{ color: tokens.muted, fontSize: "13px" }}>
