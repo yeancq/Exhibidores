@@ -162,9 +162,38 @@ function obtenerPreferencia(p, plantillaId) {
   return null;
 }
 
+// Calcula, para cada turno, su "rango intercalado" dentro de su propia plantilla (mismo día/sitio/horario
+// que se repite cada semana). En vez de 0,1,2,3,4 (orden cronológico puro) da 0,2,4,1,3 (primero las
+// fechas "pares" del ciclo, luego las "impares"). Esto se usa como desempate al ordenar los turnos:
+// cuando dos o más turnos de la misma plantilla tienen la misma cantidad de gente disponible (lo habitual,
+// porque la disponibilidad se marca por plantilla y no cambia semana a semana), evita que una pareja
+// forzada (p. ej. solo 2 personas disponibles para ese turno) agote su cupo mensual en las primeras
+// semanas consecutivas del mes; en vez de eso, sus turnos quedan repartidos/alternados.
+function calcularRangoIntercalado(turnosDelMes) {
+  const porPlantilla = {};
+  turnosDelMes.forEach((t) => {
+    if (!porPlantilla[t.plantillaId]) porPlantilla[t.plantillaId] = [];
+    porPlantilla[t.plantillaId].push(t);
+  });
+  const rango = {};
+  Object.values(porPlantilla).forEach((grupo) => {
+    // grupo ya está en orden cronológico porque turnosDelMes viene ordenado por fecha
+    const pares = [];
+    const impares = [];
+    grupo.forEach((t, idx) => (idx % 2 === 0 ? pares : impares).push(t));
+    [...pares, ...impares].forEach((t, rangoIdx) => { rango[t.id] = rangoIdx; });
+  });
+  return rango;
+}
+
 function assignTurnos(participantes, turnosDelMes) {
   const disponibles = (t) => participantes.filter((p) => p.disponibilidad[t.plantillaId] && !estaAusenteEnFecha(p, t.fecha));
-  const orden = [...turnosDelMes].sort((a, b) => disponibles(a).length - disponibles(b).length);
+  const rangoIntercalado = calcularRangoIntercalado(turnosDelMes);
+  const orden = [...turnosDelMes].sort((a, b) => {
+    const diff = disponibles(a).length - disponibles(b).length;
+    if (diff !== 0) return diff;
+    return rangoIntercalado[a.id] - rangoIntercalado[b.id];
+  });
   const asignadosCount = {};
   participantes.forEach((p) => (asignadosCount[p.id] = 0));
   const timeUsado = {};
