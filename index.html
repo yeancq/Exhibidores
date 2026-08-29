@@ -231,14 +231,10 @@ function calcularRangoIntercalado(turnosDelMes) {
   return rango;
 }
 
-function assignTurnos(participantes, turnosDelMes) {
+function assignTurnos(participantes, turnosDelMes, asignacionManual = {}) {
   const disponibles = (t) => participantes.filter((p) => disponibleParaTurno(p, t));
   const rangoIntercalado = calcularRangoIntercalado(turnosDelMes);
-  const orden = [...turnosDelMes].sort((a, b) => {
-    const diff = disponibles(a).length - disponibles(b).length;
-    if (diff !== 0) return diff;
-    return rangoIntercalado[a.id] - rangoIntercalado[b.id];
-  });
+
   const asignadosCount = {};
   participantes.forEach((p) => (asignadosCount[p.id] = 0));
   const timeUsado = {};
@@ -246,6 +242,36 @@ function assignTurnos(participantes, turnosDelMes) {
   const fechasAsignadas = {};
   participantes.forEach((p) => (fechasAsignadas[p.id] = []));
   const resultados = {};
+
+  // Aplica primero las asignaciones manuales: quedan fijas tal cual las eligió la persona,
+  // y sus dos integrantes se descuentan del cupo mensual y se tienen en cuenta para el
+  // espaciado, igual que si el algoritmo automático los hubiera puesto ahí.
+  const turnosPorId = {};
+  turnosDelMes.forEach((t) => (turnosPorId[t.id] = t));
+  Object.keys(asignacionManual).forEach((turnoId) => {
+    const t = turnosPorId[turnoId];
+    const pair = asignacionManual[turnoId];
+    if (!t || !pair || pair.length !== 2 || !pair[0] || !pair[1]) return;
+    const [id1, id2] = pair;
+    const p1 = participantes.find((p) => p.id === id1);
+    const p2 = participantes.find((p) => p.id === id2);
+    if (!p1 || !p2) return;
+    resultados[t.id] = { pair: [id1, id2], reason: null, manual: true };
+    asignadosCount[id1] = (asignadosCount[id1] || 0) + 1;
+    asignadosCount[id2] = (asignadosCount[id2] || 0) + 1;
+    const tk = timeKey(t);
+    timeUsado[id1].add(tk);
+    timeUsado[id2].add(tk);
+    fechasAsignadas[id1].push(t.fecha);
+    fechasAsignadas[id2].push(t.fecha);
+  });
+
+  const turnosAutomaticos = turnosDelMes.filter((t) => !resultados[t.id]);
+  const orden = [...turnosAutomaticos].sort((a, b) => {
+    const diff = disponibles(a).length - disponibles(b).length;
+    if (diff !== 0) return diff;
+    return rangoIntercalado[a.id] - rangoIntercalado[b.id];
+  });
 
   // Días totales del mes que se está asignando (para calcular el espaciado ideal de cada persona).
   const diasEnMes = turnosDelMes.length
@@ -369,6 +395,7 @@ function AsignadorTurnos() {
   const guardadoDelMes = historial[mes];
   const [turnosDelMes, setTurnosDelMes] = useState(() => guardadoDelMes?.turnosDelMes || []);
   const [asignacion, setAsignacion] = useState(() => guardadoDelMes?.asignacion || null);
+  const [asignacionManual, setAsignacionManual] = useState(() => guardadoDelMes?.asignacionManual || {});
   const [tema, setTema] = useState(() => GUARDADO?.tema || "oscuro");
   const paleta = tema === "claro" ? TOKENS_CLARO : TOKENS_OSCURO;
   const alternarTema = () => setTema((t) => (t === "oscuro" ? "claro" : "oscuro"));
@@ -394,6 +421,7 @@ function AsignadorTurnos() {
     const g = historial[nuevoMes];
     setTurnosDelMes(g?.turnosDelMes || []);
     setAsignacion(g?.asignacion || null);
+    setAsignacionManual(g?.asignacionManual || {});
   };
 
   const addTurno = () => setPlantillas((t) => [...t, { id: uid(), dia: "Lun", sitio: "", inicio: "08:00", fin: "16:00" }]);
@@ -412,11 +440,24 @@ function AsignadorTurnos() {
       delete fechasPorTurno[id];
       return { ...p, disponibilidad: disp, fechasPorTurno };
     }));
-    setTurnosDelMes((tm) => tm.filter((t) => t.plantillaId !== id));
+    setTurnosDelMes((tm) => {
+      const restantes = tm.filter((t) => t.plantillaId !== id);
+      const idsRestantes = new Set(restantes.map((t) => t.id));
+      setAsignacionManual((am) => {
+        const nuevo = {};
+        Object.keys(am).forEach((tid) => { if (idsRestantes.has(tid)) nuevo[tid] = am[tid]; });
+        return nuevo;
+      });
+      return restantes;
+    });
     setAsignacion(null);
     setHistorial((h) => {
       if (!h[mes]) return h;
-      return { ...h, [mes]: { turnosDelMes: h[mes].turnosDelMes.filter((t) => t.plantillaId !== id), asignacion: null } };
+      const turnosRestantes = h[mes].turnosDelMes.filter((t) => t.plantillaId !== id);
+      const idsRestantes = new Set(turnosRestantes.map((t) => t.id));
+      const manualRestante = {};
+      Object.keys(h[mes].asignacionManual || {}).forEach((tid) => { if (idsRestantes.has(tid)) manualRestante[tid] = h[mes].asignacionManual[tid]; });
+      return { ...h, [mes]: { turnosDelMes: turnosRestantes, asignacion: null, asignacionManual: manualRestante } };
     });
   };
 
@@ -424,7 +465,8 @@ function AsignadorTurnos() {
     const nuevos = generarTurnosMes(plantillas, mes);
     setTurnosDelMes(nuevos);
     setAsignacion(null);
-    setHistorial((h) => ({ ...h, [mes]: { turnosDelMes: nuevos, asignacion: null } }));
+    setAsignacionManual({});
+    setHistorial((h) => ({ ...h, [mes]: { turnosDelMes: nuevos, asignacion: null, asignacionManual: {} } }));
   };
 
   const addParticipante = () => {
@@ -445,6 +487,15 @@ function AsignadorTurnos() {
       return cambio ? { ...limpio, preferenciasPorTurno } : limpio;
     }));
     setAsignacion(null);
+    setAsignacionManual((am) => {
+      const nuevo = {};
+      let cambio = false;
+      Object.keys(am).forEach((tid) => {
+        if (am[tid].includes(id)) { cambio = true; return; }
+        nuevo[tid] = am[tid];
+      });
+      return cambio ? nuevo : am;
+    });
   };
   const toggleDisponibilidad = (participanteId, turnoId) => {
     setParticipantes((ps) => ps.map((p) => (p.id === participanteId
@@ -502,10 +553,23 @@ function AsignadorTurnos() {
   };
 
   const generar = () => {
-    const { resultados, asignadosCount } = assignTurnos(participantes, turnosDelMes);
+    const { resultados, asignadosCount } = assignTurnos(participantes, turnosDelMes, asignacionManual);
     const nuevaAsignacion = { resultados, asignadosCount };
     setAsignacion(nuevaAsignacion);
-    setHistorial((h) => ({ ...h, [mes]: { turnosDelMes, asignacion: nuevaAsignacion } }));
+    setHistorial((h) => ({ ...h, [mes]: { turnosDelMes, asignacion: nuevaAsignacion, asignacionManual } }));
+  };
+
+  // Fija (o quita, si pair es null) la pareja manual de un turno concreto. Esta asignación
+  // queda "protegida": se muestra de inmediato y, al pulsar "Generar asignación", el algoritmo
+  // automático la respeta y solo rellena el resto de turnos a su alrededor.
+  const setManual = (turnoId, pair) => {
+    setAsignacionManual((am) => {
+      const nuevo = { ...am };
+      if (!pair) delete nuevo[turnoId];
+      else nuevo[turnoId] = pair;
+      setHistorial((h) => ({ ...h, [mes]: { turnosDelMes, asignacion, asignacionManual: nuevo } }));
+      return nuevo;
+    });
   };
 
   const porDia = useMemo(() => {
@@ -516,7 +580,7 @@ function AsignadorTurnos() {
   }, [plantillas]);
 
   const nombreDe = (id) => participantes.find((p) => p.id === id)?.nombre || "?";
-  const cubiertos = asignacion ? Object.values(asignacion.resultados).filter((r) => r.pair).length : 0;
+  const cubiertos = turnosDelMes.filter((t) => asignacionManual[t.id] || asignacion?.resultados[t.id]?.pair).length;
 
   const reiniciarTodo = () => {
     if (!confirm("Esto borra todos los datos guardados en este navegador (plantillas, participantes e historial de asignaciones). ¿Continuar?")) return;
@@ -687,10 +751,11 @@ function AsignadorTurnos() {
         {tab === "asignacion" && (
           <AsignacionTab plantillas={plantillas} participantes={participantes}
             mes={mes} setMes={cambiarMes} turnosDelMes={turnosDelMes} generarMes={generarMes}
-            asignacion={asignacion} generar={generar} nombreDe={nombreDe} cubiertos={cubiertos} />
+            asignacion={asignacion} generar={generar} nombreDe={nombreDe} cubiertos={cubiertos}
+            asignacionManual={asignacionManual} setManual={setManual} />
         )}
         {tab === "calendario" && (
-          <CalendarioTab mes={mes} setMes={cambiarMes} turnosDelMes={turnosDelMes} asignacion={asignacion} nombreDe={nombreDe} historial={historial} />
+          <CalendarioTab mes={mes} setMes={cambiarMes} turnosDelMes={turnosDelMes} asignacion={asignacion} nombreDe={nombreDe} historial={historial} asignacionManual={asignacionManual} />
         )}
       </div>
     </div>
@@ -1023,9 +1088,53 @@ function formatFechaLarga(fecha, dia) {
   return `${dia} ${d}/${m}/${y}`;
 }
 
-function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, generarMes, asignacion, generar, nombreDe, cubiertos }) {
+// Pequeño formulario para fijar a mano la pareja de un turno concreto. Se usa dentro de
+// AsignacionTab, tanto para crear una asignación manual nueva como para editar/quitar una existente.
+function EditorAsignacionManual({ participantes, pairInicial, onGuardar, onQuitar, onCancelar }) {
+  const [id1, setId1] = useState(pairInicial?.[0] || "");
+  const [id2, setId2] = useState(pairInicial?.[1] || "");
+  const valido = id1 && id2 && id1 !== id2;
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap",
+      padding: "10px", borderRadius: "6px", background: tokens.surfaceAlt, border: `1px solid ${tokens.border}`,
+    }}>
+      <select className="at-select" style={{ fontSize: "11.5px" }} value={id1} onChange={(e) => setId1(e.target.value)}>
+        <option value="">Persona 1</option>
+        {participantes.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+      </select>
+      <Link2 size={13} color={tokens.muted} />
+      <select className="at-select" style={{ fontSize: "11.5px" }} value={id2} onChange={(e) => setId2(e.target.value)}>
+        <option value="">Persona 2</option>
+        {participantes.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+      </select>
+      <button className="at-btn" onClick={() => valido && onGuardar([id1, id2])} disabled={!valido} style={{
+        background: valido ? tokens.accent : tokens.border, border: "none", borderRadius: "6px",
+        padding: "6px 12px", color: valido ? "#1a1206" : tokens.muted, fontSize: "11.5px", fontWeight: 700,
+        cursor: valido ? "pointer" : "not-allowed",
+      }}>
+        Guardar
+      </button>
+      {onQuitar && (
+        <button className="at-btn" onClick={onQuitar} style={{ background: "transparent", border: "none", color: tokens.warn, fontSize: "11.5px", cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+          Quitar asignación manual
+        </button>
+      )}
+      <button className="at-btn" onClick={onCancelar} style={{ background: "transparent", border: "none", color: tokens.muted, fontSize: "11.5px", cursor: "pointer", padding: 0, marginLeft: "auto" }}>
+        Cancelar
+      </button>
+      {id1 && id2 && id1 === id2 && (
+        <div style={{ width: "100%", fontSize: "10.5px", color: tokens.warn }}>Elige dos personas distintas.</div>
+      )}
+    </div>
+  );
+}
+
+function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, generarMes, asignacion, generar, nombreDe, cubiertos, asignacionManual, setManual }) {
   const puedeGenerarMes = plantillas.length > 0 && !!mes;
   const puedeAsignar = turnosDelMes.length > 0 && participantes.length >= 2;
+  const [editandoId, setEditandoId] = useState(null); // id del turno cuyo editor manual está abierto
 
   const porFecha = useMemo(() => {
     const map = {};
@@ -1067,7 +1176,9 @@ function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, g
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
         <div style={{ fontSize: "12.5px", color: tokens.muted }}>
-          {asignacion ? `${cubiertos} de ${turnosDelMes.length} turnos cubiertos` : "Genera la asignación con los turnos del mes."}
+          {turnosDelMes.length > 0
+            ? `${cubiertos} de ${turnosDelMes.length} turnos cubiertos`
+            : "Genera la asignación con los turnos del mes."}
         </div>
         <button className="at-btn" onClick={generar} disabled={!puedeAsignar} style={{
           display: "flex", alignItems: "center", gap: "6px",
@@ -1087,6 +1198,8 @@ function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, g
         Nota: si alguien tiene un periodo de ausencia que cubre la fecha exacta de un turno, no se le asigna ese turno.
         El sistema también intenta repartir las participaciones de cada persona de forma pareja a lo largo del mes
         (por ejemplo, si su máximo es 2, procura separarlas ~15 días; si es 4, procura una por semana).
+        También puedes fijar la pareja de un turno a mano con "Asignar manualmente": esa pareja queda protegida
+        y "Generar asignación" solo completa automáticamente el resto de turnos alrededor de ella.
       </div>
 
       {fechasOrdenadas.length > 0 && (
@@ -1099,29 +1212,57 @@ function AsignacionTab({ plantillas, participantes, mes, setMes, turnosDelMes, g
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {porFecha[fecha].map((t) => {
                   const r = asignacion ? asignacion.resultados[t.id] : null;
-                  const ok = r?.pair;
+                  const pairManual = asignacionManual[t.id] || null;
+                  const pairEfectivo = pairManual || r?.pair || null;
+                  const esManual = !!pairManual;
+                  const editando = editandoId === t.id;
                   return (
                     <div key={t.id} style={{
-                      display: "flex", alignItems: "center", gap: "12px", padding: "10px 14px", borderRadius: "8px",
-                      border: `1px solid ${!asignacion ? tokens.border : ok ? tokens.border : "rgba(217,97,79,0.4)"}`,
-                      background: !asignacion ? tokens.surface : ok ? tokens.surface : "rgba(217,97,79,0.06)",
+                      display: "flex", flexDirection: "column", gap: "8px", padding: "10px 14px", borderRadius: "8px",
+                      border: `1px solid ${pairEfectivo ? (esManual ? tokens.accent : tokens.border) : asignacion ? "rgba(217,97,79,0.4)" : tokens.border}`,
+                      background: pairEfectivo ? tokens.surface : asignacion ? "rgba(217,97,79,0.06)" : tokens.surface,
                     }}>
-                      <div className="at-mono" style={{ fontSize: "11px", color: tokens.accent2, background: tokens.surfaceAlt, padding: "4px 8px", borderRadius: "5px", whiteSpace: "nowrap" }}>
-                        {t.sitio || "Sitio"} · {t.inicio}–{t.fin}
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                        <div className="at-mono" style={{ fontSize: "11px", color: tokens.accent2, background: tokens.surfaceAlt, padding: "4px 8px", borderRadius: "5px", whiteSpace: "nowrap" }}>
+                          {t.sitio || "Sitio"} · {t.inicio}–{t.fin}
+                        </div>
+                        <ChevronRight size={13} color={tokens.muted} />
+                        {!pairEfectivo ? (
+                          asignacion ? (
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: tokens.warn, fontSize: "12.5px" }}>
+                              <AlertTriangle size={13} />{r?.reason || "Sin asignar"}
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: "12.5px", color: tokens.muted }}>Sin asignar todavía</span>
+                          )
+                        ) : (
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(pairEfectivo[0])}</span>
+                            <Link2 size={13} color={tokens.accent} />
+                            <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(pairEfectivo[1])}</span>
+                            {esManual && (
+                              <span className="at-mono" style={{ fontSize: "9.5px", fontWeight: 700, color: tokens.accent, background: "rgba(226,166,63,0.15)", padding: "2px 7px", borderRadius: "20px" }}>
+                                MANUAL
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <button className="at-btn at-mono" onClick={() => setEditandoId(editando ? null : t.id)} style={{
+                          marginLeft: "auto", display: "flex", alignItems: "center", gap: "4px",
+                          background: "transparent", border: `1px solid ${tokens.border}`, borderRadius: "5px",
+                          padding: "4px 8px", fontSize: "10.5px", color: tokens.muted, cursor: "pointer", whiteSpace: "nowrap",
+                        }}>
+                          {esManual ? "Editar manual" : "Asignar manualmente"}
+                        </button>
                       </div>
-                      <ChevronRight size={13} color={tokens.muted} />
-                      {!asignacion ? (
-                        <span style={{ fontSize: "12.5px", color: tokens.muted }}>Sin asignar todavía</span>
-                      ) : ok ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(r.pair[0])}</span>
-                          <Link2 size={13} color={tokens.accent} />
-                          <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{nombreDe(r.pair[1])}</span>
-                        </div>
-                      ) : (
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: tokens.warn, fontSize: "12.5px" }}>
-                          <AlertTriangle size={13} />{r?.reason || "Sin asignar"}
-                        </div>
+                      {editando && (
+                        <EditorAsignacionManual
+                          participantes={participantes}
+                          pairInicial={pairManual}
+                          onGuardar={(pair) => { setManual(t.id, pair); setEditandoId(null); }}
+                          onQuitar={esManual ? () => { setManual(t.id, null); setEditandoId(null); } : null}
+                          onCancelar={() => setEditandoId(null)}
+                        />
                       )}
                     </div>
                   );
@@ -1156,7 +1297,7 @@ function construirCeldas(mesStr) {
 // Construye y descarga un archivo .xlsx con el mismo aspecto que la pestaña Calendario de la app:
 // una cuadrícula de semanas (filas) x días (columnas), con el número de cada día y, debajo, los turnos
 // de esa fecha coloreados según su estado (verde = asignado, rojo = sin asignar, gris = pendiente).
-async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe) {
+async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, asignacionManual = {}) {
   if (!window.ExcelJS) {
     alert("No se pudo cargar el motor de Excel (revisa tu conexión a internet) e inténtalo de nuevo.");
     return;
@@ -1228,12 +1369,13 @@ async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe) 
       const turnosDia = turnosPorFecha[c.fecha] || [];
       turnosDia.forEach((t) => {
         const r = asignacion ? asignacion.resultados[t.id] : null;
-        const ok = r?.pair;
+        const pairManual = asignacionManual[t.id] || null;
+        const pair = pairManual || r?.pair || null;
         const encabezado = `${t.inicio} · ${t.sitio || "Sitio"}`;
-        const detalle = ok
-          ? `${nombreDe(r.pair[0])} · ${nombreDe(r.pair[1])}`
+        const detalle = pair
+          ? `${nombreDe(pair[0])} · ${nombreDe(pair[1])}${pairManual ? " (manual)" : ""}`
           : asignacion ? (r?.reason || "Sin asignar") : "Pendiente de asignar";
-        const color = ok ? COLOR_OK : asignacion ? COLOR_WARN : COLOR_MUTED;
+        const color = pair ? COLOR_OK : asignacion ? COLOR_WARN : COLOR_MUTED;
         runs.push({ text: `${encabezado}\n`, font: { bold: true, size: 9, name: "Calibri", color: { argb: COLOR_TEXTO } } });
         runs.push({ text: `${detalle}\n`, font: { size: 9, name: "Calibri", color: { argb: color } } });
       });
@@ -1256,7 +1398,7 @@ async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe) 
   URL.revokeObjectURL(url);
 }
 
-function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, historial }) {
+function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, historial, asignacionManual = {} }) {
   const [exportando, setExportando] = useState(false);
   const turnosPorFecha = useMemo(() => {
     const map = {};
@@ -1275,7 +1417,7 @@ function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, histor
   const manejarExportar = async () => {
     setExportando(true);
     try {
-      await exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe);
+      await exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, asignacionManual);
     } catch (e) {
       alert("No se pudo generar el Excel. Inténtalo de nuevo.");
     } finally {
@@ -1341,16 +1483,17 @@ function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, histor
                   <div className="at-mono" style={{ fontSize: "10px", color: esHoy ? tokens.accent : tokens.muted }}>{c.dia}</div>
                   {turnosDia.map((t) => {
                     const r = asignacion ? asignacion.resultados[t.id] : null;
-                    const ok = r?.pair;
+                    const pairManual = asignacionManual[t.id] || null;
+                    const pair = pairManual || r?.pair || null;
                     return (
                       <div key={t.id} title={`${t.sitio} ${t.inicio}–${t.fin}`} style={{
                         fontSize: "8.5px", lineHeight: 1.35, borderRadius: "4px", padding: "2px 4px",
-                        background: !asignacion ? tokens.surfaceAlt : ok ? "rgba(73,179,166,0.14)" : "rgba(217,97,79,0.14)",
-                        color: !asignacion ? tokens.muted : ok ? tokens.accent2 : tokens.warn,
+                        background: pair ? (pairManual ? "rgba(226,166,63,0.16)" : "rgba(73,179,166,0.14)") : asignacion ? "rgba(217,97,79,0.14)" : tokens.surfaceAlt,
+                        color: pair ? (pairManual ? tokens.accent : tokens.accent2) : asignacion ? tokens.warn : tokens.muted,
                       }}>
                         <div className="at-mono" style={{ fontWeight: 600 }}>{t.inicio} · {t.sitio}</div>
-                        {ok ? (
-                          <div style={{ color: tokens.text }}>{nombreDe(r.pair[0])} · {nombreDe(r.pair[1])}</div>
+                        {pair ? (
+                          <div style={{ color: tokens.text }}>{nombreDe(pair[0])} · {nombreDe(pair[1])}{pairManual ? " ✎" : ""}</div>
                         ) : asignacion ? (
                           <div>Sin asignar</div>
                         ) : null}
