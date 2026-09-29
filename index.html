@@ -1353,6 +1353,10 @@ async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, 
   const semanas = [];
   for (let i = 0; i < celdas.length; i += 7) semanas.push(celdas.slice(i, i + 7));
 
+  // Estima cuántas líneas ocupa un texto al hacer wrap en una columna de ancho 24 (~26 caracteres a 9pt)
+  const CHARS_POR_LINEA = 26;
+  const lineasDe = (texto) => Math.max(1, Math.ceil(texto.length / CHARS_POR_LINEA));
+
   let filaActual = 3;
   semanas.forEach((semana) => {
     const fila = ws.getRow(filaActual);
@@ -1366,23 +1370,38 @@ async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, 
 
       const esHoy = c.fecha === hoy;
       const runs = [{ text: `${c.dia}\n`, font: { bold: true, size: 10, name: "Calibri", color: { argb: esHoy ? COLOR_ACCENT : COLOR_TEXTO } } }];
+      let lineas = 1; // línea del número de día
       const turnosDia = turnosPorFecha[c.fecha] || [];
-      turnosDia.forEach((t) => {
+      turnosDia.forEach((t, idx) => {
         const r = asignacion ? asignacion.resultados[t.id] : null;
         const pairManual = asignacionManual[t.id] || null;
         const pair = pairManual || r?.pair || null;
         const encabezado = `${t.inicio} · ${t.sitio || "Sitio"}`;
-        const detalle = pair
-          ? `${nombreDe(pair[0])} · ${nombreDe(pair[1])}${pairManual ? " (manual)" : ""}`
-          : asignacion ? (r?.reason || "Sin asignar") : "Pendiente de asignar";
-        const color = pair ? COLOR_OK : asignacion ? COLOR_WARN : COLOR_MUTED;
-        runs.push({ text: `${encabezado}\n`, font: { bold: true, size: 9, name: "Calibri", color: { argb: COLOR_TEXTO } } });
-        runs.push({ text: `${detalle}\n`, font: { size: 9, name: "Calibri", color: { argb: color } } });
+        const colorEstado = pair ? (pairManual ? COLOR_ACCENT : COLOR_OK) : asignacion ? COLOR_WARN : COLOR_MUTED;
+
+        // Igual que en la app: cabecera coloreada por estado, nombres en color normal,
+        // y "Sin asignar" (sin el motivo largo) cuando no hay pareja.
+        let detalle = null;
+        let colorDetalle = COLOR_TEXTO;
+        if (pair) {
+          detalle = `${nombreDe(pair[0])} · ${nombreDe(pair[1])}${pairManual ? " ✎" : ""}`;
+        } else if (asignacion) {
+          detalle = "Sin asignar";
+          colorDetalle = COLOR_WARN;
+        }
+
+        const separador = idx < turnosDia.length - 1 ? "\n" : "";
+        runs.push({ text: `${encabezado}\n`, font: { bold: true, size: 9, name: "Calibri", color: { argb: colorEstado } } });
+        lineas += lineasDe(encabezado);
+        if (detalle) {
+          runs.push({ text: `${detalle}${separador}`, font: { size: 9, name: "Calibri", color: { argb: colorDetalle } } });
+          lineas += lineasDe(detalle);
+        }
       });
       celda.value = { richText: runs };
-      maxLineas = Math.max(maxLineas, 1 + turnosDia.length * 2);
+      maxLineas = Math.max(maxLineas, lineas);
     });
-    fila.height = Math.max(18, maxLineas * 13);
+    fila.height = Math.min(409, Math.max(18, maxLineas * 13 + 6)); // 409 es el máximo de Excel
     filaActual++;
   });
 
