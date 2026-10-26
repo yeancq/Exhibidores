@@ -798,7 +798,7 @@ function TurnosTab({ turnos, addTurno, updateTurno, removeTurno, duplicarTurno }
 }
 
 function normalizarTexto(s) {
-  return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 }
 
 // Pequeño calendario mensual para elegir, dentro de una plantilla recurrente (p. ej. "Sáb 11:00–13:00"),
@@ -1294,25 +1294,23 @@ function construirCeldas(mesStr) {
   return celdas;
 }
 
-// Construye y descarga un archivo .xlsx con el mismo aspecto que la pestaña Calendario de la app:
-// una cuadrícula de semanas (filas) x días (columnas), con el número de cada día y, debajo, los turnos
-// de esa fecha coloreados según su estado (verde = asignado, rojo = sin asignar, gris = pendiente).
-async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, asignacionManual = {}) {
-  if (!window.ExcelJS) {
-    alert("No se pudo cargar el motor de Excel (revisa tu conexión a internet) e inténtalo de nuevo.");
-    return;
-  }
+// Paletas del Excel (ARGB). La hoja clara usa tonos de texto MÁS OSCUROS que antes para que
+// sitios, horarios y nombres se lean con mucho contraste; la hoja oscura usa un fondo muy oscuro
+// con texto claro.
+const EXCEL_PALETA_CLARA = {
+  fondo: "FFFFFFFF", cabecera: "FFDDE3EA", titulo: "FFE9EDF2", borde: "FF9AA5B4",
+  texto: "FF05080C", muted: "FF2E3642", accent: "FF7A4B05", ok: "FF0A5A4E", warn: "FF8F1F10",
+};
+const EXCEL_PALETA_OSCURA = {
+  fondo: "FF0B0D11", cabecera: "FF1F2631", titulo: "FF12151B", borde: "FF3A4356",
+  texto: "FFF5F7FA", muted: "FFB4BCCA", accent: "FFF2B84B", ok: "FF5FD0C1", warn: "FFF0806E",
+};
 
-  const COLOR_FONDO = "FFFFFFFF";
-  const COLOR_CABECERA = "FFEEF1F5";
-  const COLOR_TITULO = "FFF4F5F7";
-  const COLOR_BORDE = "FFD7DCE3";
-  const COLOR_TEXTO = "FF1B2027";
-  const COLOR_MUTED = "FF5B6472";
-  const COLOR_ACCENT = "FFB3791E";
-  const COLOR_OK = "FF1F8F80";
-  const COLOR_WARN = "FFC94A39";
+// Tamaños de letra del Excel (más grandes que antes: sitio y horario pasaron de 9 a 13).
+const EXCEL_TAM = { titulo: 16, cabeceraDia: 12, numeroDia: 13, sitioHorario: 13, detalle: 11 };
 
+// Dibuja una hoja del calendario (semanas x días) con la paleta dada.
+function construirHojaCalendario(wb, nombreHoja, paleta, mes, turnosDelMes, asignacion, nombreDe, asignacionManual) {
   const turnosPorFecha = {};
   turnosDelMes.forEach((t) => {
     if (!turnosPorFecha[t.fecha]) turnosPorFecha[t.fecha] = [];
@@ -1322,88 +1320,96 @@ async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, 
 
   const celdas = construirCeldas(mes);
   const hoy = new Date().toISOString().slice(0, 10);
+  const ANCHO_COL = 34; // caracteres aprox. por columna (más ancha para que quepa la letra grande)
 
-  const wb = new window.ExcelJS.Workbook();
-  wb.creator = "Asignador de turnos";
-  const nombreHoja = (formatMesLargo(mes) || "Calendario").slice(0, 31);
-  const ws = wb.addWorksheet(nombreHoja, { views: [{ showGridLines: false }] });
-  ws.columns = DIAS.map(() => ({ width: 24 }));
+  const ws = wb.addWorksheet(nombreHoja.slice(0, 31), { views: [{ showGridLines: false }] });
+  ws.columns = DIAS.map(() => ({ width: ANCHO_COL }));
 
   // Fila 1: título del mes
   ws.mergeCells(1, 1, 1, 7);
   const titulo = ws.getCell(1, 1);
   titulo.value = `Calendario de turnos — ${formatMesLargo(mes)}`;
-  titulo.font = { bold: true, size: 14, color: { argb: COLOR_TEXTO }, name: "Calibri" };
+  titulo.font = { bold: true, size: EXCEL_TAM.titulo, color: { argb: paleta.texto }, name: "Calibri" };
   titulo.alignment = { horizontal: "center", vertical: "middle" };
-  titulo.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_TITULO } };
-  ws.getRow(1).height = 28;
+  titulo.fill = { type: "pattern", pattern: "solid", fgColor: { argb: paleta.titulo } };
+  ws.getRow(1).height = 32;
 
   // Fila 2: cabecera con los días de la semana
   const filaCabecera = ws.getRow(2);
   DIAS.forEach((d, i) => {
     const c = filaCabecera.getCell(i + 1);
     c.value = d;
-    c.font = { bold: true, size: 10, color: { argb: COLOR_MUTED }, name: "Calibri" };
+    c.font = { bold: true, size: EXCEL_TAM.cabeceraDia, color: { argb: paleta.texto }, name: "Calibri" };
     c.alignment = { horizontal: "center", vertical: "middle" };
-    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_CABECERA } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: paleta.cabecera } };
   });
-  filaCabecera.height = 18;
+  filaCabecera.height = 22;
 
-  const bordeFino = { style: "thin", color: { argb: COLOR_BORDE } };
+  const bordeFino = { style: "thin", color: { argb: paleta.borde } };
   const semanas = [];
   for (let i = 0; i < celdas.length; i += 7) semanas.push(celdas.slice(i, i + 7));
 
-  // Estima cuántas líneas ocupa un texto al hacer wrap en una columna de ancho 24 (~26 caracteres a 9pt)
-  const CHARS_POR_LINEA = 26;
-  const lineasDe = (texto) => Math.max(1, Math.ceil(texto.length / CHARS_POR_LINEA));
+  // Estimación de líneas que ocupa un texto al envolverse dentro de la columna.
+  const lineasDe = (texto, tam) => {
+    const charsPorLinea = Math.max(8, Math.floor(ANCHO_COL * 11 / tam));
+    return Math.max(1, Math.ceil(texto.length / charsPorLinea));
+  };
 
   let filaActual = 3;
   semanas.forEach((semana) => {
     const fila = ws.getRow(filaActual);
-    let maxLineas = 2;
+    let alturaMax = 24;
     semana.forEach((c, colIdx) => {
       const celda = fila.getCell(colIdx + 1);
       celda.alignment = { vertical: "top", horizontal: "left", wrapText: true };
       celda.border = { top: bordeFino, left: bordeFino, bottom: bordeFino, right: bordeFino };
-      celda.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_FONDO } };
+      celda.fill = { type: "pattern", pattern: "solid", fgColor: { argb: paleta.fondo } };
       if (!c) return;
 
       const esHoy = c.fecha === hoy;
-      const runs = [{ text: `${c.dia}\n`, font: { bold: true, size: 10, name: "Calibri", color: { argb: esHoy ? COLOR_ACCENT : COLOR_TEXTO } } }];
-      let lineas = 1; // línea del número de día
+      const runs = [{ text: `${c.dia}\n`, font: { bold: true, size: EXCEL_TAM.numeroDia, name: "Calibri", color: { argb: esHoy ? paleta.accent : paleta.texto } } }];
+      let altura = EXCEL_TAM.numeroDia * 1.45;
       const turnosDia = turnosPorFecha[c.fecha] || [];
-      turnosDia.forEach((t, idx) => {
+      turnosDia.forEach((t) => {
         const r = asignacion ? asignacion.resultados[t.id] : null;
         const pairManual = asignacionManual[t.id] || null;
         const pair = pairManual || r?.pair || null;
         const encabezado = `${t.inicio} · ${t.sitio || "Sitio"}`;
-        const colorEstado = pair ? (pairManual ? COLOR_ACCENT : COLOR_OK) : asignacion ? COLOR_WARN : COLOR_MUTED;
-
-        // Igual que en la app: cabecera coloreada por estado, nombres en color normal,
-        // y "Sin asignar" (sin el motivo largo) cuando no hay pareja.
-        let detalle = null;
-        let colorDetalle = COLOR_TEXTO;
-        if (pair) {
-          detalle = `${nombreDe(pair[0])} · ${nombreDe(pair[1])}${pairManual ? " ✎" : ""}`;
-        } else if (asignacion) {
-          detalle = "Sin asignar";
-          colorDetalle = COLOR_WARN;
-        }
-
-        const separador = idx < turnosDia.length - 1 ? "\n" : "";
-        runs.push({ text: `${encabezado}\n`, font: { bold: true, size: 9, name: "Calibri", color: { argb: colorEstado } } });
-        lineas += lineasDe(encabezado);
-        if (detalle) {
-          runs.push({ text: `${detalle}${separador}`, font: { size: 9, name: "Calibri", color: { argb: colorDetalle } } });
-          lineas += lineasDe(detalle);
-        }
+        const detalle = pair
+          ? `${nombreDe(pair[0])} · ${nombreDe(pair[1])}${pairManual ? " (manual)" : ""}`
+          : asignacion ? (r?.reason || "Sin asignar") : "Pendiente de asignar";
+        const color = pair ? paleta.ok : asignacion ? paleta.warn : paleta.muted;
+        runs.push({ text: `${encabezado}\n`, font: { bold: true, size: EXCEL_TAM.sitioHorario, name: "Calibri", color: { argb: paleta.texto } } });
+        runs.push({ text: `${detalle}\n`, font: { bold: true, size: EXCEL_TAM.detalle, name: "Calibri", color: { argb: color } } });
+        altura += lineasDe(encabezado, EXCEL_TAM.sitioHorario) * EXCEL_TAM.sitioHorario * 1.4
+          + lineasDe(detalle, EXCEL_TAM.detalle) * EXCEL_TAM.detalle * 1.4;
       });
       celda.value = { richText: runs };
-      maxLineas = Math.max(maxLineas, lineas);
+      alturaMax = Math.max(alturaMax, altura + 6);
     });
-    fila.height = Math.min(409, Math.max(18, maxLineas * 13 + 6)); // 409 es el máximo de Excel
+    fila.height = Math.min(409, alturaMax); // 409 es el máximo de altura de fila en Excel
     filaActual++;
   });
+
+  return ws;
+}
+
+// Construye y descarga un archivo .xlsx con el mismo aspecto que la pestaña Calendario de la app:
+// una cuadrícula de semanas (filas) x días (columnas), con el número de cada día y, debajo, los turnos
+// de esa fecha coloreados según su estado (verde = asignado, rojo = sin asignar, gris = pendiente).
+// El libro incluye DOS hojas con el mismo contenido: una en modo claro y otra en modo oscuro.
+async function exportarCalendarioExcel(mes, turnosDelMes, asignacion, nombreDe, asignacionManual = {}) {
+  if (!window.ExcelJS) {
+    alert("No se pudo cargar el motor de Excel (revisa tu conexión a internet) e inténtalo de nuevo.");
+    return;
+  }
+
+  const wb = new window.ExcelJS.Workbook();
+  wb.creator = "Asignador de turnos";
+  const base = formatMesLargo(mes) || "Calendario";
+
+  construirHojaCalendario(wb, `${base} claro`, EXCEL_PALETA_CLARA, mes, turnosDelMes, asignacion, nombreDe, asignacionManual);
+  construirHojaCalendario(wb, `${base} oscuro`, EXCEL_PALETA_OSCURA, mes, turnosDelMes, asignacion, nombreDe, asignacionManual);
 
   const buffer = await wb.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -1454,7 +1460,7 @@ function CalendarioTab({ mes, setMes, turnosDelMes, asignacion, nombreDe, histor
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <button className="at-btn" onClick={manejarExportar} disabled={turnosDelMes.length === 0 || exportando} title="Exportar a Excel en vista calendario" style={{
+          <button className="at-btn" onClick={manejarExportar} disabled={turnosDelMes.length === 0 || exportando} title="Exportar a Excel en vista calendario (dos hojas: modo claro y modo oscuro)" style={{
             display: "flex", alignItems: "center", gap: "6px",
             background: turnosDelMes.length ? tokens.accent2 : tokens.surfaceAlt, border: "none", borderRadius: "8px",
             padding: "9px 14px", color: turnosDelMes.length ? "#04211d" : tokens.muted, fontSize: "13px", fontWeight: 700,
